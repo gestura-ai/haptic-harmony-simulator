@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Haptic Harmony Ring Simulator</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header with Navigation -->
+        <!-- Floating Interface Toggle (Top Center) -->
+        <div class="floating-interface-toggle" id="floating-interface-toggle">
+            <button class="interface-toggle-btn active" data-interface="ring" id="ring-tab">
+                Simulator
+            </button>
+            <button class="interface-toggle-btn" data-interface="config" id="config-tab">
+                Config
+            </button>
+        </div>
+
+        <!-- Status Badge (Bottom Left) -->
+        <div class="status-badge-corner" id="status-badge-corner">
+            <span id="ring-status-text">Sim Mode</span>
+        </div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Ring Interface (Default) -->
+            <section class="interface-panel active" id="ring-interface">
+                <div class="simulator-container">
+                    <!-- Ring Visualization -->
+                    <div class="ring-component">
+                        <div class="ring-visual" id="ring-visual">
+                            <svg
+                               width="210mm"
+                               height="210mm"
+                               viewBox="0 0 210 210"
+                               version="1.1"
+                               id="hapticharmony-b1-shape"
+                               xmlns="http://www.w3.org/2000/svg"
+                               xmlns:svg="http://www.w3.org/2000/svg">
+                              <defs id="defs1" />
+                              <ellipse
+                                 style="display:inline;opacity:1;fill:none;fill-rule:evenodd;stroke:#000000;stroke-width:30.8465;stroke-linecap:butt;stroke-linejoin:bevel;stroke-dasharray:none;stroke-opacity:1;paint-order:fill markers stroke"
+                                 id="ring"
+                                 ry="82.970535"
+                                 rx="81.156723"
+                                 cy="-8.4016533"
+                                 cx="148.4462"
+                                 transform="matrix(0.66575036,0.74617455,-0.73527576,0.67776807,0,0)" />
+                              <path
+                                 id="pad"
+                                 style="display:inline;opacity:1;fill:#ccff00;fill-rule:evenodd;stroke:none;stroke-width:32.9381;stroke-linecap:butt;stroke-linejoin:bevel;stroke-dasharray:none;stroke-opacity:1;paint-order:fill markers stroke"
+                                 d="M 173.55682,34.608375 C 169.27618,30.325313 164.57669,26.439064 159.50877,23.023491 133.88997,5.7574221 101.42472,2.23885 72.084153,13.54897 60.05395,18.186339 49.171421,25.152865 39.942976,33.869364 l 20.588823,23.075998 c 0.256239,-0.2376 0.52146,-0.483059 0.796749,-0.737167 5.232989,-4.831613 6.213151,-5.636349 9.093335,-7.464896 12.35545,-7.844111 26.122634,-11.506519 40.299697,-10.720329 9.73655,0.539946 19.49919,3.413444 27.91179,8.215604 4.76446,2.719703 8.63369,5.573308 12.35859,9.169814 z" />
+                            </svg>
+
+                            <!-- Tap indicator for PAD section -->
+                            <div class="pad-tap-indicator" id="tap-indicator"></div>
+
+                            <!-- 4-Way Arrow Toggle (center) -->
+                            <div class="tilt-toggle" id="tilt-toggle" title="Tilt mode - Click to toggle directional cues">
+                                <div class="tilt-arrows">
+                                    <div class="tilt-arrow up" data-direction="up">⬆️</div>
+                                    <div class="tilt-arrow down" data-direction="down">⬇️</div>
+                                    <div class="tilt-arrow left" data-direction="left">⬅️</div>
+                                    <div class="tilt-arrow right" data-direction="right">➡️</div>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Control Buttons (smaller, demo-style) -->
+                    <div class="control-panel">
+                        <div class="control-buttons">
+                            <button class="control-btn" data-gesture="tap" id="tap-btn">Tap</button>
+                            <button class="control-btn" data-gesture="slide" id="slide-btn">Slide</button>
+                            <button class="control-btn" data-action="tilt-toggle" id="tilt-btn">Tilt</button>
+                            <button class="control-btn vibrate-btn" data-action="vibrate" id="vibrate-btn" disabled>Vibrate</button>
+
+                        </div>
+                    </div>
+
+                    <!-- Gesture Display (Hidden by default) -->
+                    <div class="gesture-display" style="display: none;">
+                        <div class="gesture-name">Ready</div>
+                        <div class="gesture-confidence">100%</div>
+                    </div>
+
+
+                </div>
+            </section>
+
+            <!-- Configuration Interface -->
+            <section class="interface-panel" id="config-interface">
+                <div class="config-layout">
+                    <!-- Table of Contents -->
+                    <nav class="config-toc">
+                        <h2>Configuration</h2>
+                        <ul class="toc-list">
+                            <li><a href="#ring-model" class="toc-link active">Ring Model</a></li>
+                            <li><a href="#connection" class="toc-link">Connection</a></li>
+                            <li><a href="#battery" class="toc-link">Battery</a></li>
+                            <li><a href="#gestures" class="toc-link">Gestures</a></li>
+                            <li><a href="#haptic" class="toc-link">Haptic</a></li>
+                            <li><a href="#advanced" class="toc-link">Advanced</a></li>
+                        </ul>
+                    </nav>
+
+                    <!-- Configuration Content -->
+                    <main class="config-content">
+                        <!-- Ring Model Section -->
+                        <section id="ring-model" class="config-section">
+                            <h3>Ring Model</h3>
+                            <div class="section-content">
+                                <select id="ringType" class="ring-select">
+                                    <option value="b1" selected>B1 - Haptic Harmony Ring</option>
+                                    <option value="a1" disabled>A1 - Advanced Ring (Coming 2025)</option>
+                                    <option value="p1" disabled>P1 - Pro Ring (Coming 2025)</option>
+                                </select>
+                            </div>
+                        </section>
+
+                        <!-- Connection Section -->
+                        <section id="connection" class="config-section">
+                            <h3>Connection</h3>
+                            <div class="section-content">
+                                <div class="connection-controls">
+                                    <button class="config-btn" id="scan-btn">Scan for Real Ring</button>
+                                    <button class="config-btn secondary" id="disconnect-btn" disabled>Disconnect</button>
+                                </div>
+
+                                <div class="connection-info">
+                                    <div class="info-row">
+                                        <span class="label">Mode:</span>
+                                        <span class="value" id="connection-mode">Simulation</span>
+                                    </div>
+                                    <div class="info-row">
+                                        <span class="label">Device:</span>
+                                        <span class="value" id="device-name">Virtual Ring</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Battery Section -->
+                        <section id="battery" class="config-section">
+                            <h3>Battery Simulation</h3>
+                            <div class="section-content">
+                                <div class="setting-row">
+                                    <label for="battery-slider">Battery Level</label>
+                                    <div class="range-control">
+                                        <input type="range" id="battery-slider" min="0" max="100" value="85">
+                                        <span class="range-value" id="battery-percentage">85%</span>
+                                    </div>
+                                </div>
+                                <div class="setting-row checkbox-row">
+                                    <input type="checkbox" id="charging-toggle">
+                                    <label for="charging-toggle">Charging</label>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Gesture Settings Section -->
+                        <section id="gestures" class="config-section">
+                            <h3>Gesture Settings</h3>
+                            <div class="section-content">
+                                <div class="setting-row">
+                                    <label for="tap-sensitivity">Tap Sensitivity</label>
+                                    <div class="range-control">
+                                        <input type="range" id="tap-sensitivity" min="1" max="10" value="5">
+                                        <span class="range-value">5</span>
+                                    </div>
+                                </div>
+                                <div class="setting-row">
+                                    <label for="hold-duration">Hold Duration</label>
+                                    <div class="range-control">
+                                        <input type="range" id="hold-duration" min="300" max="2000" value="800" step="100">
+                                        <span class="range-value">800ms</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Haptic Feedback Section -->
+                        <section id="haptic" class="config-section">
+                            <h3>Haptic Feedback</h3>
+                            <div class="section-content">
+                                <div class="setting-row">
+                                    <label for="haptic-intensity">Intensity</label>
+                                    <div class="range-control">
+                                        <input type="range" id="haptic-intensity" min="0" max="100" value="75">
+                                        <span class="range-value">75%</span>
+                                    </div>
+                                </div>
+                                <div class="setting-row checkbox-row">
+                                    <input type="checkbox" id="haptic-enabled" checked>
+                                    <label for="haptic-enabled">Enable Haptic Feedback</label>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Advanced Section -->
+                        <section id="advanced" class="config-section">
+                            <h3>Advanced</h3>
+                            <div class="section-content">
+                                <div class="setting-row checkbox-row">
+                                    <input type="checkbox" id="debug-mode">
+                                    <label for="debug-mode">Debug Mode</label>
+                                </div>
+                                <div class="setting-row checkbox-row">
+                                    <input type="checkbox" id="auto-reconnect" checked>
+                                    <label for="auto-reconnect">Auto Reconnect</label>
+                                </div>
+
+                                <div class="version-info">
+                                    <span class="version-badge">SDK v0.9.0-beta</span>
+                                </div>
+                            </div>
+                        </section>
+                    </main>
+                </div>
+            </section>
+
+            <!-- Console Interface -->
+        </main>
+
+        <!-- Console Toggle Section (Bottom) -->
+        <div class="console-section" id="console-section">
+            <!-- Resizable drag handle -->
+            <div class="console-resize-handle" id="console-resize-handle">
+                <div class="resize-grip"></div>
+            </div>
+
+            <div class="console-toggle-header" id="console-header">
+                <span>Console</span>
+                <button class="console-collapse-btn" id="console-collapse" title="Close Console">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="console-content" id="console-content">
+                <div class="activity-log" id="activity-log">
+                    <div class="log-entry">
+                        <span class="timestamp">12:34:56</span>
+                        <span class="level info">INFO</span>
+                        <span class="event">System initialized</span>
+                    </div>
+                    <div class="log-entry">
+                        <span class="timestamp">12:34:57</span>
+                        <span class="level success">BLE</span>
+                        <span class="event">Advertising started</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Floating Console Toggle (Lower Right) -->
+        <div class="floating-controls" id="floating-controls">
+            <button class="console-float-btn" id="console-toggle" title="Toggle Console">
+                <svg class="console-icon" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+                    <g>
+                        <path fill="currentColor" d="M10,102.4v92h45.6c25.1,0,45.7,0.1,45.8,0.3c0.1,0.2-3.3,11.7-7.5,25.5l-7.7,25.1l20.8,0.1c11.5,0,30.3,0,41.8,0l20.9-0.1l-7.3-24c-4-13.2-7.4-24.7-7.6-25.5l-0.3-1.5h45.7H246v-92v-92H128H10V102.4z M223.9,102.7v70.5h-95.6H32.6v-70.5V32.2h95.6h95.6L223.9,102.7L223.9,102.7z"/>
+                        <path fill="currentColor" d="M67.8,67.2l-5.1,5.1l15,15l15,15l-15.4,15.4l-15.4,15.4l5.2,5.2l5.2,5.2l20.6-20.7l20.7-20.6l-20.1-20c-11-11-20.1-20.1-20.3-20.1C73,62.1,70.6,64.4,67.8,67.2z"/>
+                        <path fill="currentColor" d="M128,135.2v7.1h33.2h33.2l0-1.6c0-0.9,0-4.1,0-7.1l0-5.4l-33.3-0.1L128,128V135.2z"/>
+                    </g>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

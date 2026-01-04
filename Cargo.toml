@@ -1,0 +1,49 @@
+[package]
+name = "haptic-harmony-simulation"
+version = "0.1.0"
+edition = "2024"
+authors = ["Gestura AI Team"]
+description = "Advanced haptic ring simulation toolkit with BLE peripheral emulation"
+license = "BSD-3-Clause"
+repository = "https://github.com/haptic-harmony/haptic-harmony-simulation"
+keywords = ["haptic", "ble", "simulation", "tauri", "ring"]
+categories = ["simulation", "hardware-support", "gui"]
+
+[lib]
+name = "haptic_harmony_simulation"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+async-trait = "0.1.88"
+base64 = "0.22.1"
+btleplug = { version = "0.11.8", features = ["serde"] }
+bluer = { version = "0.17", features = ["bluetoothd"], optional = true }
+chrono = { version = "0.4.41", features = ["serde"] }
+clap = { version = "4.5.43", features = ["derive"] }
+crossterm = "0.28.1"
+ipc-channel = "0.16.1"
+reqwest = { version = "0.12.5", features = ["json"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.142"
+tokio = { version = "1.38.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+uuid = { version = "1.18.0", features = ["v4"] }
+
+# Tauri v2.0.0-beta dependencies (optional)
+tauri = { version = "2.0.0-beta", features = [], optional = true }
+tauri-plugin-shell = { version = "2.0.0-beta", optional = true }
+
+
+rand = "0.8.5"
+
+[features]
+default = []
+linux-ble = ["bluer"]
+tauri-gui = ["tauri", "tauri-plugin-shell"]
+cli-only = []
+
+# Tauri build configuration
+[build-dependencies]
+tauri-build = { version = "2.0.0-beta", features = [] }

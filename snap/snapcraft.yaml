@@ -1,0 +1,105 @@
+name: haptic-harmony-simulator
+base: core22
+version: git
+summary: Haptic Harmony Simulator for developers
+description: |
+  Advanced haptic ring simulation with BLE peripheral emulation. 
+  Features modern Tauri GUI with modular ring support (B1, A1, P1), 
+  cross-platform compatibility, and real-time gesture recognition 
+  with haptic feedback.
+
+grade: stable
+confinement: strict
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+apps:
+  haptic-harmony-simulator:
+    command: bin/haptic-harmony-simulation --mode gui
+    desktop: usr/share/applications/haptic-harmony-simulator.desktop
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - network-bind
+      - bluez
+      - bluetooth-control
+      - hardware-observe
+      - system-observe
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - opengl
+      - audio-playback
+      - removable-media
+
+  haptic-harmony-simulator-cli:
+    command: bin/haptic-harmony-simulation --mode cli
+    plugs:
+      - home
+      - network
+      - network-bind
+      - bluez
+      - bluetooth-control
+      - hardware-observe
+      - system-observe
+
+parts:
+  haptic-harmony-simulator:
+    plugin: rust
+    source: .
+    build-packages:
+      - build-essential
+      - pkg-config
+      - libwebkit2gtk-4.0-dev
+      - libgtk-3-dev
+      - libayatana-appindicator3-dev
+      - librsvg2-dev
+      - libudev-dev
+      - libdbus-1-dev
+      - libssl-dev
+    stage-packages:
+      - libwebkit2gtk-4.0-37
+      - libgtk-3-0
+      - libayatana-appindicator3-1
+      - librsvg2-2
+      - libudev1
+      - libdbus-1-3
+      - libssl3
+    rust-features:
+      - tauri-gui
+    override-build: |
+      craftctl default
+      # Copy the binary to the expected location
+      cp target/release/haptic-harmony-simulation $CRAFT_PART_INSTALL/bin/
+      
+      # Create desktop file
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/applications
+      cat > $CRAFT_PART_INSTALL/usr/share/applications/haptic-harmony-simulator.desktop << EOF
+      [Desktop Entry]
+      Type=Application
+      Name=Haptic Harmony Simulator
+      Comment=Haptic Harmony Ring Simulator for developers
+      Exec=haptic-harmony-simulator
+      Icon=haptic-harmony-simulator
+      Categories=Development;
+      Terminal=false
+      EOF
+      
+      # Copy icons
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/icons/hicolor/16x16/apps
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/icons/hicolor/32x32/apps
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/icons/hicolor/64x64/apps
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/icons/hicolor/128x128/apps
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps
+      
+      cp icons/16x16.png $CRAFT_PART_INSTALL/usr/share/icons/hicolor/16x16/apps/haptic-harmony-simulator.png
+      cp icons/32x32.png $CRAFT_PART_INSTALL/usr/share/icons/hicolor/32x32/apps/haptic-harmony-simulator.png
+      cp icons/64x64.png $CRAFT_PART_INSTALL/usr/share/icons/hicolor/64x64/apps/haptic-harmony-simulator.png
+      cp icons/128x128.png $CRAFT_PART_INSTALL/usr/share/icons/hicolor/128x128/apps/haptic-harmony-simulator.png
+      cp icons/256x256.png $CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/haptic-harmony-simulator.png
+      cp icons/512x512.png $CRAFT_PART_INSTALL/usr/share/icons/hicolor/512x512/apps/haptic-harmony-simulator.png

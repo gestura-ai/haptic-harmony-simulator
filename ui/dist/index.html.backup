@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Haptic Harmony Ring Simulator</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-ring"></i>
+                    <h1>Haptic Harmony Ring Simulator</h1>
+                </div>
+
+                <!-- Ring Model Selector -->
+                <div class="ring-selector">
+                    <label for="ringType">Ring Model:</label>
+                    <select id="ringType" class="ring-select">
+                        <option value="b1" selected>B1 - Haptic Harmony Ring</option>
+                        <option value="a1" disabled>A1 - Advanced Ring (Coming 2025)</option>
+                        <option value="p1" disabled>P1 - Pro Ring (Coming 2025)</option>
+                    </select>
+                </div>
+
+                <div class="status-indicators">
+                    <div class="status-item" id="ble-status">
+                        <i class="fas fa-bluetooth"></i>
+                        <span>BLE: Advertising</span>
+                    </div>
+                    <div class="status-item" id="connection-status">
+                        <i class="fas fa-wifi"></i>
+                        <span>Disconnected</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Left Panel: Ring Visualization -->
+            <section class="ring-panel">
+                <div class="ring-container">
+                    <div class="ring-visualization" id="ring-viz">
+                        <div class="ring-outer">
+                            <div class="ring-inner">
+                                <div class="ring-center">
+                                    <i class="fas fa-hand-paper" id="gesture-icon"></i>
+                                </div>
+                                <div class="haptic-indicators">
+                                    <div class="haptic-dot" data-position="top"></div>
+                                    <div class="haptic-dot" data-position="right"></div>
+                                    <div class="haptic-dot" data-position="bottom"></div>
+                                    <div class="haptic-dot" data-position="left"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="gesture-display">
+                        <h3>Current Gesture</h3>
+                        <div class="gesture-info" id="gesture-info">
+                            <span class="gesture-name">Ready</span>
+                            <span class="gesture-confidence">100%</span>
+                        </div>
+                    </div>
+
+                    <!-- Ring Specifications -->
+                    <div class="ring-specs">
+                        <h3 id="ringModelName">B1 Haptic Harmony Ring</h3>
+                        <div class="specs-grid" id="ringSpecs">
+                            <div class="spec-item">
+                                <span class="spec-label">Haptic Zones:</span>
+                                <span class="spec-value">4</span>
+                            </div>
+                            <div class="spec-item">
+                                <span class="spec-label">Battery:</span>
+                                <span class="spec-value" id="batteryLevel">85%</span>
+                            </div>
+                            <div class="spec-item">
+                                <span class="spec-label">Firmware:</span>
+                                <span class="spec-value">v1.2.3</span>
+                            </div>
+                            <div class="spec-item">
+                                <span class="spec-label">Response Time:</span>
+                                <span class="spec-value" id="responseTime">< 50ms</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Center Panel: Controls -->
+            <section class="controls-panel">
+                <div class="control-group">
+                    <h3>Gesture Simulation</h3>
+                    <div class="gesture-buttons">
+                        <button class="gesture-btn" data-gesture="tap">
+                            <i class="fas fa-hand-pointer"></i>
+                            Tap
+                        </button>
+                        <button class="gesture-btn" data-gesture="double-tap">
+                            <i class="fas fa-hand-pointer"></i>
+                            Double Tap
+                        </button>
+                        <button class="gesture-btn" data-gesture="hold">
+                            <i class="fas fa-hand-rock"></i>
+                            Hold
+                        </button>
+                        <button class="gesture-btn" data-gesture="slide">
+                            <i class="fas fa-hand-paper"></i>
+                            Slide
+                        </button>
+                        <button class="gesture-btn" data-gesture="tilt">
+                            <i class="fas fa-hand-scissors"></i>
+                            Tilt
+                        </button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h3>Haptic Testing</h3>
+                    <div class="haptic-controls">
+                        <button class="haptic-btn" data-pattern="notify">
+                            <i class="fas fa-bell"></i>
+                            Notify
+                        </button>
+                        <button class="haptic-btn" data-pattern="buzz">
+                            <i class="fas fa-mobile-alt"></i>
+                            Buzz
+                        </button>
+                        <button class="haptic-btn" data-pattern="pulse">
+                            <i class="fas fa-heartbeat"></i>
+                            Pulse
+                        </button>
+                    </div>
+                    
+                    <div class="intensity-control">
+                        <label for="intensity-slider">Intensity</label>
+                        <input type="range" id="intensity-slider" min="0" max="100" value="80">
+                        <span id="intensity-value">80%</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h3>Battery Simulation</h3>
+                    <div class="battery-controls">
+                        <button class="battery-btn" id="toggle-charging">
+                            <i class="fas fa-bolt"></i>
+                            Toggle Charging
+                        </button>
+                        <div class="battery-presets">
+                            <button class="preset-btn" data-level="10">10%</button>
+                            <button class="preset-btn" data-level="50">50%</button>
+                            <button class="preset-btn" data-level="90">90%</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel: Status & Logs -->
+            <section class="status-panel">
+                <div class="battery-status">
+                    <h3>Battery Status</h3>
+                    <div class="battery-display">
+                        <div class="battery-icon">
+                            <div class="battery-level" id="battery-level"></div>
+                            <i class="fas fa-bolt charging-icon" id="charging-icon"></i>
+                        </div>
+                        <div class="battery-info">
+                            <div class="battery-percentage" id="battery-percentage">85%</div>
+                            <div class="battery-details">
+                                <span id="battery-voltage">4.16V</span>
+                                <span id="battery-temp">25°C</span>
+                                <span id="battery-health">Good</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="activity-log">
+                    <h3>Activity Log</h3>
+                    <div class="log-container" id="log-container">
+                        <div class="log-entry">
+                            <span class="timestamp">12:34:56</span>
+                            <span class="log-type info">INFO</span>
+                            <span class="message">Simulator started</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="connection-info">
+                    <h3>Connection Info</h3>
+                    <div class="connection-details">
+                        <div class="detail-item">
+                            <span class="label">Device Name:</span>
+                            <span class="value">Haptic Harmony Ring Simulator</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="label">BLE Status:</span>
+                            <span class="value" id="ble-detail">Advertising</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="label">Connected Clients:</span>
+                            <span class="value" id="client-count">0</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

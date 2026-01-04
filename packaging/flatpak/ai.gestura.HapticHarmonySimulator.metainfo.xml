@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>ai.gestura.HapticHarmonySimulator</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Haptic Harmony Simulator</name>
+  <summary>Haptic Harmony Ring Simulator for developers</summary>
+  <description>
+    <p>
+      Advanced haptic ring simulation with BLE peripheral emulation. Features modern Tauri GUI 
+      with modular ring support (B1, A1, P1), cross-platform compatibility, and real-time 
+      gesture recognition with haptic feedback.
+    </p>
+    <p>
+      Perfect for developers working with Gestura's Haptic Harmony Ring ecosystem. Test your 
+      applications without physical hardware, simulate various ring models, and debug BLE 
+      communication protocols.
+    </p>
+  </description>
+  <launchable type="desktop-id">ai.gestura.HapticHarmonySimulator.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main simulator interface</caption>
+      <image>https://raw.githubusercontent.com/gestura-ai/haptic-harmony-simulation/main/docs/screenshots/main-interface.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/gestura-ai/haptic-harmony-simulation</url>
+  <url type="bugtracker">https://github.com/gestura-ai/haptic-harmony-simulation/issues</url>
+  <url type="help">https://github.com/gestura-ai/haptic-harmony-simulation/blob/main/README.md</url>
+  <developer_name>Gestura AI LLC</developer_name>
+  <categories>
+    <category>Development</category>
+    <category>Engineering</category>
+  </categories>
+  <keywords>
+    <keyword>haptic</keyword>
+    <keyword>ring</keyword>
+    <keyword>simulator</keyword>
+    <keyword>ble</keyword>
+    <keyword>bluetooth</keyword>
+    <keyword>gestura</keyword>
+    <keyword>development</keyword>
+  </keywords>
+  <provides>
+    <binary>haptic-harmony-simulation</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2025-01-13">
+      <description>
+        <p>Initial release of Haptic Harmony Simulator</p>
+        <ul>
+          <li>Advanced haptic ring simulation with BLE peripheral emulation</li>
+          <li>Modern Tauri GUI with modular ring support (B1, A1, P1)</li>
+          <li>Cross-platform compatibility</li>
+          <li>Real-time gesture recognition and haptic feedback</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

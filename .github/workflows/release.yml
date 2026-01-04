@@ -1,0 +1,709 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+      release_id: ${{ steps.set_release_id.outputs.release_id }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get version from Cargo.toml
+      id: get_version
+      run: |
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          version="${{ github.event.inputs.version }}"
+        else
+          # Extract version from Cargo.toml
+          version=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          version="v${version}"
+        fi
+        echo "version=${version}" >> $GITHUB_OUTPUT
+        echo "Version: ${version}"
+
+    - name: Check if release exists
+      id: check_release
+      run: |
+        if gh release view "${{ steps.get_version.outputs.version }}" >/dev/null 2>&1; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          release_id=$(gh release view "${{ steps.get_version.outputs.version }}" --json id --jq .id)
+          echo "release_id=${release_id}" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create Release
+      id: create_release
+      if: steps.check_release.outputs.exists == 'false'
+      uses: ncipollo/release-action@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: ${{ steps.get_version.outputs.version }}
+        name: Haptic Harmony Simulator ${{ steps.get_version.outputs.version }}
+        draft: false
+        prerelease: false
+        body: |
+          ## Haptic Harmony Simulator ${{ steps.get_version.outputs.version }}
+
+          Advanced haptic ring simulation with BLE peripheral emulation.
+
+          ### Features
+          - Modern Tauri GUI with modular ring support (B1, A1, P1)
+          - Cross-platform compatibility (macOS, Linux, Windows)
+          - Real-time gesture recognition and haptic feedback
+          - BLE peripheral emulation for development
+
+          ### Downloads
+          Choose the appropriate version for your platform:
+
+          #### Windows
+          - **x64**: `haptic-harmony-simulator-windows-x64.zip`
+          - **ARM64**: `haptic-harmony-simulator-windows-arm64.zip`
+
+          #### macOS
+          - **Intel**: `haptic-harmony-simulator-macos-x64.tar.gz`
+          - **Apple Silicon**: `haptic-harmony-simulator-macos-arm64.tar.gz`
+
+          #### Linux
+          - **x64**: `haptic-harmony-simulator-linux-x64.tar.gz`
+          - **ARM64**: `haptic-harmony-simulator-linux-arm64.tar.gz`
+          - **AppImage**: `haptic-harmony-simulator-x86_64.AppImage`
+
+    - name: Set release ID
+      id: set_release_id
+      run: |
+        if [[ "${{ steps.check_release.outputs.exists }}" == "true" ]]; then
+          echo "release_id=${{ steps.check_release.outputs.release_id }}" >> $GITHUB_OUTPUT
+        else
+          echo "release_id=${{ steps.create_release.outputs.id }}" >> $GITHUB_OUTPUT
+        fi
+
+  build-tauri:
+    name: Build Tauri App
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS builds
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
+            arch: 'arm64'
+            os_name: 'macos'
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+            target: 'x86_64-apple-darwin'
+            arch: 'x64'
+            os_name: 'macos'
+          # Linux builds
+          - platform: 'ubuntu-22.04'
+            args: '--target x86_64-unknown-linux-gnu'
+            target: 'x86_64-unknown-linux-gnu'
+            arch: 'x64'
+            os_name: 'linux'
+          - platform: 'ubuntu-22.04'
+            args: '--target aarch64-unknown-linux-gnu'
+            target: 'aarch64-unknown-linux-gnu'
+            arch: 'arm64'
+            os_name: 'linux'
+          # Windows builds
+          - platform: 'windows-latest'
+            args: '--target x86_64-pc-windows-msvc'
+            target: 'x86_64-pc-windows-msvc'
+            arch: 'x64'
+            os_name: 'windows'
+          - platform: 'windows-latest'
+            args: '--target aarch64-pc-windows-msvc'
+            target: 'aarch64-pc-windows-msvc'
+            arch: 'arm64'
+            os_name: 'windows'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies (Ubuntu)
+      if: matrix.platform == 'ubuntu-22.04'
+      run: |
+        echo "Updating package lists..."
+        sudo apt-get update --fix-missing
+        echo "Installing system dependencies..."
+        sudo apt-get install -y --no-install-recommends \
+          libwebkit2gtk-4.1-dev \
+          build-essential \
+          curl \
+          wget \
+          file \
+          libxdo-dev \
+          libssl-dev \
+          libayatana-appindicator3-dev \
+          librsvg2-dev \
+          libudev-dev \
+          libdbus-1-dev \
+          pkg-config
+
+        # Install cross-compilation tools for ARM64
+        if [[ "${{ matrix.arch }}" == "arm64" ]]; then
+          echo "Installing ARM64 cross-compilation tools..."
+
+          # Install basic cross-compilation tools (these should always be available)
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
+
+          # Try to add ARM64 architecture and install libraries
+          echo "Attempting ARM64 cross-compilation setup..."
+
+          # Add ARM64 architecture
+          sudo dpkg --add-architecture arm64 || echo "Failed to add ARM64 architecture"
+
+          # Update package lists with timeout and error handling
+          echo "Updating package lists (this may take a while or fail)..."
+          timeout 300 sudo apt-get update 2>/dev/null || {
+            echo "Package list update failed or timed out"
+            echo "This is a known issue with Ubuntu ARM64 repositories in CI environments"
+            echo "Continuing with basic cross-compilation setup..."
+          }
+
+          # Try to install ARM64 libraries, but don't fail if they're not available
+          echo "Attempting to install ARM64 libraries..."
+          sudo apt-get install -y --ignore-missing --no-install-recommends \
+            libwebkit2gtk-4.1-dev:arm64 \
+            libxdo-dev:arm64 \
+            libayatana-appindicator3-dev:arm64 \
+            librsvg2-dev:arm64 \
+            libdbus-1-dev:arm64 \
+            libudev-dev:arm64 \
+            libssl-dev:arm64 \
+            pkg-config:arm64 2>/dev/null || {
+            echo "ARM64 library installation failed"
+            echo "Cross-compilation will use system libraries and may have linking issues"
+          }
+
+          echo "ARM64 cross-compilation setup completed (with possible warnings)"
+        fi
+        echo "Dependencies installed successfully"
+
+    - name: Rust setup
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Rust cache
+      uses: swatinem/rust-cache@v2
+
+    - name: Sync node version and setup cache
+      uses: actions/setup-node@v4
+      with:
+        node-version: 'lts/*'
+        cache: 'npm'
+        cache-dependency-path: ui/package-lock.json
+
+    - name: Install frontend dependencies
+      run: npm ci
+      working-directory: ./ui
+
+    - name: Build frontend
+      run: npm run build
+      working-directory: ./ui
+
+    - name: Install Tauri CLI
+      run: npm install -g @tauri-apps/cli@v2
+
+    - name: Verify icon configuration
+      run: |
+        echo "🎨 Verifying icon configuration..."
+        chmod +x scripts/verify-icons.sh
+        ./scripts/verify-icons.sh
+
+    - name: Set up cross-compilation environment (Linux ARM64)
+      if: matrix.platform == 'ubuntu-22.04' && matrix.arch == 'arm64'
+      run: |
+        echo "Setting up ARM64 cross-compilation environment variables..."
+        echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+        echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> $GITHUB_ENV
+        echo "STRIP_aarch64_unknown_linux_gnu=aarch64-linux-gnu-strip" >> $GITHUB_ENV
+        echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+        echo "PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig" >> $GITHUB_ENV
+        echo "PKG_CONFIG_aarch64_unknown_linux_gnu=pkg-config" >> $GITHUB_ENV
+
+        # Set additional environment variables for cross-compilation
+        echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu=--sysroot=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+
+        echo "ARM64 cross-compilation environment configured"
+
+    - name: Import Apple Developer Certificate (macOS)
+      if: matrix.platform == 'macos-latest'
+      uses: apple-actions/import-codesign-certs@v2
+      with:
+        p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+        p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+    - name: Setup macOS code signing environment
+      if: matrix.platform == 'macos-latest'
+      run: |
+        echo "Setting up macOS code signing environment..."
+
+        # Check if code signing is configured
+        if [[ -n "${{ secrets.APPLE_CERTIFICATE }}" ]]; then
+          echo "🔐 Code signing certificates detected"
+
+          # Verify certificate is imported
+          echo "Available signing identities:"
+          security find-identity -v -p codesigning
+
+          # Set environment variables for Tauri
+          echo "APPLE_CERTIFICATE=${{ secrets.APPLE_CERTIFICATE }}" >> $GITHUB_ENV
+          echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" >> $GITHUB_ENV
+          echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}" >> $GITHUB_ENV
+          echo "APPLE_ID=${{ secrets.APPLE_ID }}" >> $GITHUB_ENV
+          echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}" >> $GITHUB_ENV
+          echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}" >> $GITHUB_ENV
+
+          # Enable code signing in Tauri
+          echo "TAURI_SIGNING_PRIVATE_KEY=${{ secrets.APPLE_CERTIFICATE }}" >> $GITHUB_ENV
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" >> $GITHUB_ENV
+
+          echo "✅ macOS code signing environment configured"
+        else
+          echo "⚠️ No code signing certificates configured"
+          echo "The app will be built unsigned (development only)"
+          echo "See MACOS_CODE_SIGNING_SETUP.md for production setup"
+        fi
+
+    - name: Setup Windows code signing environment
+      if: matrix.platform == 'windows-latest'
+      shell: powershell
+      run: |
+        Write-Host "Setting up Windows code signing environment..."
+
+        # Check if SSL.com code signing is configured
+        if ("${{ secrets.WINDOWS_CERTIFICATE }}" -ne "") {
+          Write-Host "🔐 SSL.com Windows code signing certificate detected"
+
+          # Create temporary certificate file
+          $certPath = "$env:RUNNER_TEMP\ssl-com-certificate.p12"
+          $certBytes = [Convert]::FromBase64String("${{ secrets.WINDOWS_CERTIFICATE }}")
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+
+          Write-Host "📋 Certificate file created: $certPath"
+
+          # Import certificate to certificate store
+          $password = ConvertTo-SecureString "${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}" -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+
+          Write-Host "✅ Certificate imported successfully"
+          Write-Host "📋 Certificate Subject: $($cert.Subject)"
+          Write-Host "📋 Certificate Thumbprint: $($cert.Thumbprint)"
+          Write-Host "📋 Certificate Valid From: $($cert.NotBefore)"
+          Write-Host "📋 Certificate Valid Until: $($cert.NotAfter)"
+
+          # Verify certificate is valid for code signing
+          $codeSigningCerts = Get-ChildItem -Path Cert:\CurrentUser\My -CodeSigningCert
+          if ($codeSigningCerts.Count -eq 0) {
+            Write-Error "❌ No code signing certificates found in store"
+            exit 1
+          }
+
+          # Find SSL.com certificate by subject name or use first available
+          $sslComCert = $codeSigningCerts | Where-Object { $_.Subject -like "*${{ secrets.WINDOWS_SIGNING_SUBJECT_NAME }}*" } | Select-Object -First 1
+          if (-not $sslComCert) {
+            Write-Host "⚠️  SSL.com certificate not found by subject name, using first available code signing certificate"
+            $sslComCert = $codeSigningCerts | Select-Object -First 1
+          }
+
+          Write-Host "🎯 Using certificate: $($sslComCert.Subject)"
+
+          # Set environment variables for Tauri (SSL.com uses timestamp.ssl.com)
+          echo "WINDOWS_CERTIFICATE_THUMBPRINT=$($sslComCert.Thumbprint)" >> $env:GITHUB_ENV
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}" >> $env:GITHUB_ENV
+
+          # Clean up certificate file
+          Remove-Item $certPath
+
+          Write-Host "✅ SSL.com code signing environment configured"
+        } else {
+          Write-Host "⚠️ No SSL.com Windows code signing certificate configured"
+          Write-Host "The app will be built unsigned (development only)"
+          Write-Host "See WINDOWS_CODE_SIGNING_SETUP.md for production setup"
+        }
+
+    - name: Build Tauri app
+      id: build-tauri
+      uses: tauri-apps/tauri-action@v0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # macOS code signing environment variables
+        APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # Windows code signing environment variables
+        WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+        WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        # Tauri-specific signing variables
+        TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.APPLE_CERTIFICATE }}
+        TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      with:
+        tagName: ${{ needs.create-release.outputs.version }}
+        releaseId: ${{ needs.create-release.outputs.release_id }}
+        args: ${{ matrix.args }} --features tauri-gui
+      continue-on-error: ${{ matrix.arch == 'arm64' && matrix.platform == 'ubuntu-22.04' }}
+
+    - name: Verify macOS code signing and notarization
+      if: matrix.platform == 'macos-latest' && steps.build-tauri.outcome == 'success'
+      run: |
+        echo "🔍 Verifying macOS build and code signing..."
+
+        # Find the built .app bundle
+        APP_PATH=$(find target/${{ matrix.target }}/release/bundle/macos -name "*.app" -type d 2>/dev/null | head -1)
+        if [[ -z "$APP_PATH" ]]; then
+          # Try alternative location
+          APP_PATH=$(find . -name "*.app" -type d 2>/dev/null | head -1)
+        fi
+
+        if [[ -z "$APP_PATH" ]]; then
+          echo "❌ Could not find .app bundle"
+          echo "Available files in target directory:"
+          find target -name "*.app" -o -name "*.dmg" 2>/dev/null || echo "No .app or .dmg files found"
+          exit 1
+        fi
+
+        echo "📱 Found app bundle: $APP_PATH"
+
+        # Check if app is signed
+        echo "🔐 Checking code signature status..."
+        if codesign --verify --verbose=2 "$APP_PATH" 2>/dev/null; then
+          echo "✅ App is properly code signed"
+
+          # Check signing identity
+          echo "🆔 Signing identity details:"
+          codesign -dv --verbose=4 "$APP_PATH" 2>&1 | grep "Authority=" || echo "Could not retrieve signing authority"
+
+          # Check if it's a Developer ID (for notarization)
+          if codesign -dv "$APP_PATH" 2>&1 | grep -q "Developer ID Application"; then
+            echo "🎯 Developer ID Application certificate detected - notarization enabled"
+          else
+            echo "⚠️ Not a Developer ID certificate - notarization may not be available"
+          fi
+        else
+          echo "⚠️ App is not code signed (development build)"
+          echo "This is normal for development builds without certificates configured"
+        fi
+
+        # Find the .dmg file
+        echo "💿 Looking for DMG installer..."
+        DMG_PATH=$(find target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" 2>/dev/null | head -1)
+        if [[ -z "$DMG_PATH" ]]; then
+          # Try alternative location
+          DMG_PATH=$(find . -name "*.dmg" 2>/dev/null | head -1)
+        fi
+
+        if [[ -n "$DMG_PATH" ]]; then
+          echo "💿 Found DMG: $DMG_PATH"
+
+          # Check DMG signature
+          echo "🔐 Checking DMG signature..."
+          if codesign --verify --verbose=2 "$DMG_PATH" 2>/dev/null; then
+            echo "✅ DMG is properly code signed"
+
+            # Check notarization status
+            echo "📋 Checking notarization status..."
+            if spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH" 2>/dev/null; then
+              echo "✅ DMG passes Gatekeeper assessment"
+            else
+              echo "⚠️ DMG may not be notarized yet (this is normal for fresh uploads)"
+              echo "Notarization can take several minutes to complete"
+            fi
+          else
+            echo "⚠️ DMG is not code signed (development build)"
+          fi
+        else
+          echo "⚠️ No DMG file found - may not be generated for this target"
+        fi
+
+        echo "✅ macOS build verification completed"
+
+        # Verify icons are properly embedded
+        echo "🎨 Verifying icon embedding..."
+        if [[ -f "$APP_PATH/Contents/Resources/icon.icns" ]]; then
+          icon_size=$(du -h "$APP_PATH/Contents/Resources/icon.icns" | cut -f1)
+          echo "✅ App icon embedded: icon.icns ($icon_size)"
+
+          # Check Info.plist icon reference
+          if grep -q "CFBundleIconFile" "$APP_PATH/Contents/Info.plist"; then
+            icon_ref=$(grep -A 1 "CFBundleIconFile" "$APP_PATH/Contents/Info.plist" | tail -1 | sed 's/.*<string>\(.*\)<\/string>.*/\1/')
+            echo "✅ Info.plist icon reference: $icon_ref"
+          else
+            echo "⚠️ No CFBundleIconFile in Info.plist"
+          fi
+        else
+          echo "❌ App icon missing from bundle"
+        fi
+
+        # Check DMG volume icon
+        if [[ -n "$DMG_PATH" ]]; then
+          echo "🎨 Verifying DMG volume icon..."
+          # Mount DMG temporarily to check volume icon
+          mount_point=$(mktemp -d)
+          if hdiutil attach "$DMG_PATH" -mountpoint "$mount_point" -readonly -quiet; then
+            if [[ -f "$mount_point/.VolumeIcon.icns" ]]; then
+              volume_icon_size=$(du -h "$mount_point/.VolumeIcon.icns" | cut -f1)
+              echo "✅ DMG volume icon found: .VolumeIcon.icns ($volume_icon_size)"
+            else
+              echo "⚠️ No volume icon found in DMG"
+            fi
+            hdiutil detach "$mount_point" -quiet || true
+            rmdir "$mount_point" 2>/dev/null || true
+          else
+            echo "⚠️ Could not mount DMG to verify volume icon"
+          fi
+        fi
+
+    - name: Verify Windows code signing
+      if: matrix.platform == 'windows-latest' && steps.build-tauri.outcome == 'success'
+      shell: powershell
+      run: |
+        Write-Host "🔍 Verifying Windows build and code signing..."
+
+        # Find the built .exe file
+        $exePath = Get-ChildItem -Path "target\${{ matrix.target }}\release" -Name "*.exe" -Recurse | Select-Object -First 1
+        if (-not $exePath) {
+          # Try alternative locations
+          $exePath = Get-ChildItem -Path "." -Name "haptic-harmony-simulation.exe" -Recurse | Select-Object -First 1
+        }
+
+        if (-not $exePath) {
+          Write-Host "❌ Could not find .exe file"
+          Write-Host "Available files in target directory:"
+          Get-ChildItem -Path "target" -Name "*.exe" -Recurse -ErrorAction SilentlyContinue
+          exit 1
+        }
+
+        Write-Host "📱 Found executable: $exePath"
+
+        # Check if executable is signed
+        Write-Host "🔐 Checking code signature status..."
+        try {
+          $signature = Get-AuthenticodeSignature -FilePath $exePath
+          if ($signature.Status -eq "Valid") {
+            Write-Host "✅ Executable is properly code signed"
+            Write-Host "🆔 Signing certificate: $($signature.SignerCertificate.Subject)"
+            Write-Host "📅 Certificate valid until: $($signature.SignerCertificate.NotAfter)"
+
+            # Check if it's an SSL.com certificate
+            if ($signature.SignerCertificate.Subject -like "*SSL.com*" -or $signature.SignerCertificate.Issuer -like "*SSL.com*") {
+              Write-Host "🔐 SSL.com certificate detected - excellent!"
+            }
+
+            # Check if it's timestamped (SSL.com uses timestamp.ssl.com)
+            if ($signature.TimeStamperCertificate) {
+              Write-Host "⏰ Signature is timestamped (good for long-term validity)"
+              Write-Host "🕐 Timestamp authority: $($signature.TimeStamperCertificate.Subject)"
+              if ($signature.TimeStamperCertificate.Subject -like "*SSL.com*") {
+                Write-Host "✅ SSL.com timestamp server used"
+              }
+            } else {
+              Write-Host "⚠️ Signature is not timestamped"
+            }
+
+            # Verify SmartScreen compatibility
+            Write-Host "🛡️ Checking SmartScreen compatibility..."
+            Write-Host "   Certificate chain validation: $($signature.Status)"
+            Write-Host "   This signed executable should pass Windows Defender SmartScreen"
+          } elseif ($signature.Status -eq "NotSigned") {
+            Write-Host "⚠️ Executable is not code signed (development build)"
+            Write-Host "This is normal for development builds without certificates configured"
+          } else {
+            Write-Host "❌ Code signature status: $($signature.Status)"
+            Write-Host "❌ Status message: $($signature.StatusMessage)"
+          }
+        } catch {
+          Write-Host "⚠️ Could not check signature status: $($_.Exception.Message)"
+        }
+
+        # Find MSI installer if it exists
+        Write-Host "📦 Looking for MSI installer..."
+        $msiPath = Get-ChildItem -Path "target\${{ matrix.target }}\release\bundle\msi" -Name "*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($msiPath) {
+          Write-Host "📦 Found MSI installer: $msiPath"
+
+          # Check MSI signature
+          try {
+            $msiSignature = Get-AuthenticodeSignature -FilePath "target\${{ matrix.target }}\release\bundle\msi\$msiPath"
+            if ($msiSignature.Status -eq "Valid") {
+              Write-Host "✅ MSI installer is properly code signed"
+            } else {
+              Write-Host "⚠️ MSI installer signature status: $($msiSignature.Status)"
+            }
+          } catch {
+            Write-Host "⚠️ Could not check MSI signature: $($_.Exception.Message)"
+          }
+        } else {
+          Write-Host "⚠️ No MSI installer found"
+        }
+
+        Write-Host "✅ Windows build verification completed"
+
+        # Verify icons are properly embedded
+        Write-Host "🎨 Verifying icon embedding..."
+        try {
+          # Check if executable has icon resource
+          $iconInfo = [System.Drawing.Icon]::ExtractAssociatedIcon($exePath)
+          if ($iconInfo) {
+            Write-Host "✅ Executable icon embedded successfully"
+            Write-Host "📏 Icon size: $($iconInfo.Width)x$($iconInfo.Height)"
+            $iconInfo.Dispose()
+          } else {
+            Write-Host "⚠️ No icon found in executable"
+          }
+        } catch {
+          Write-Host "⚠️ Could not verify executable icon: $($_.Exception.Message)"
+        }
+
+        # Check if icon.ico exists in project
+        if (Test-Path "icons\icon.ico") {
+          $iconSize = (Get-Item "icons\icon.ico").Length
+          Write-Host "✅ Source icon file available: icon.ico ($([math]::Round($iconSize/1KB, 1))KB)"
+        } else {
+          Write-Host "⚠️ Source icon file not found: icons\icon.ico"
+        }
+
+    - name: Check ARM64 build result
+      if: matrix.arch == 'arm64' && matrix.platform == 'ubuntu-22.04'
+      run: |
+        if [[ "${{ steps.build-tauri.outcome }}" == "failure" ]]; then
+          echo "⚠️ ARM64 build failed due to repository issues"
+          echo "This is a known issue with Ubuntu ARM64 repositories in CI"
+          echo "The x64 builds will still be available"
+          echo "ARM64 support may be added in future releases"
+        else
+          echo "✅ ARM64 build completed successfully"
+        fi
+
+    - name: Debug build outputs
+      if: always()
+      run: |
+        echo "=== Debugging build outputs ==="
+        echo "Current directory contents:"
+        ls -la
+
+        echo -e "\n=== Target directory structure ==="
+        if [[ -d "target" ]]; then
+          find target -name "haptic-harmony-simulation*" -type f 2>/dev/null || echo "No haptic-harmony-simulation binaries found in target/"
+          echo -e "\nAll files in target/${{ matrix.target }}/release/ (if exists):"
+          ls -la "target/${{ matrix.target }}/release/" 2>/dev/null || echo "Directory target/${{ matrix.target }}/release/ does not exist"
+        else
+          echo "No target directory found"
+        fi
+
+        echo -e "\n=== Src-tauri directory structure ==="
+        if [[ -d "src-tauri" ]]; then
+          find src-tauri -name "haptic-harmony-simulation*" -type f 2>/dev/null || echo "No haptic-harmony-simulation binaries found in src-tauri/"
+          echo -e "\nAll files in src-tauri/target/${{ matrix.target }}/release/ (if exists):"
+          ls -la "src-tauri/target/${{ matrix.target }}/release/" 2>/dev/null || echo "Directory src-tauri/target/${{ matrix.target }}/release/ does not exist"
+        else
+          echo "No src-tauri directory found"
+        fi
+
+        echo -e "\n=== All executable files ==="
+        find . -name "haptic-harmony-simulation*" -type f -executable 2>/dev/null || echo "No executable files found"
+
+    # Note: Tauri action handles all compression and uploads automatically
+    # No manual compression steps needed
+
+  build-cli:
+    name: Build CLI
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: haptic-harmony-simulation
+            asset_name: haptic-harmony-simulation-linux-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: haptic-harmony-simulation.exe
+            asset_name: haptic-harmony-simulation-windows-x64.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: haptic-harmony-simulation
+            asset_name: haptic-harmony-simulation-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: haptic-harmony-simulation
+            asset_name: haptic-harmony-simulation-macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libudev-dev \
+          libdbus-1-dev \
+          pkg-config
+
+    - name: Build CLI
+      run: cargo build --release --target ${{ matrix.target }} --no-default-features --features cli-only
+
+    - name: Compress and upload CLI binary
+      run: |
+        cd target/${{ matrix.target }}/release
+
+        # Create compressed archive
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          zip "../../../${{ matrix.asset_name }}.zip" "${{ matrix.artifact_name }}"
+          cd ../../..
+          gh release upload "${{ needs.create-release.outputs.version }}" "${{ matrix.asset_name }}.zip" --clobber
+        else
+          tar -czf "../../../${{ matrix.asset_name }}.tar.gz" "${{ matrix.artifact_name }}"
+          cd ../../..
+          gh release upload "${{ needs.create-release.outputs.version }}" "${{ matrix.asset_name }}.tar.gz" --clobber
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

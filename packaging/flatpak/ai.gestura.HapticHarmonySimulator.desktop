@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Haptic Harmony Simulator
+GenericName=Ring Simulator
+Comment=Haptic Harmony Ring Simulator for developers
+Exec=haptic-harmony-simulation --mode gui
+Icon=ai.gestura.HapticHarmonySimulator
+Categories=Development;Engineering;
+Keywords=haptic;ring;simulator;ble;bluetooth;gestura;development;
+Terminal=false
+StartupNotify=true
+StartupWMClass=haptic-harmony-simulation
+MimeType=application/x-haptic-harmony-project;

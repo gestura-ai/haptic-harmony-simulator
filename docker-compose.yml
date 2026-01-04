@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  # Development environment with hot reload
+  dev:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    ports:
+      - "8080:8080"   # CLI server
+      - "3000:3000"   # Frontend dev server
+      - "1420:1420"   # Tauri dev server
+    environment:
+      - RUST_LOG=debug
+      - CARGO_TARGET_DIR=/app/target
+    command: ["cargo", "watch", "-x", "run -- --mode cli"]
+    networks:
+      - haptic-net
+
+  # CLI production build
+  cli:
+    build:
+      context: .
+      target: cli-runtime
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+    command: ["haptic-harmony-simulation", "--mode", "cli", "--host", "0.0.0.0"]
+    networks:
+      - haptic-net
+
+  # GUI production build (requires X11 forwarding)
+  gui:
+    build:
+      context: .
+      target: gui-runtime
+    ports:
+      - "8080:8080"
+    environment:
+      - DISPLAY=${DISPLAY}
+      - RUST_LOG=info
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: ["haptic-harmony-simulation", "--mode", "gui"]
+    networks:
+      - haptic-net
+
+  # Frontend development server
+  frontend-dev:
+    image: node:18-slim
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+    ports:
+      - "3000:3000"
+    command: ["npm", "run", "dev"]
+    networks:
+      - haptic-net
+
+  # Documentation server
+  docs:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+    ports:
+      - "8000:8000"
+    command: ["cargo", "doc", "--no-deps", "--open"]
+    networks:
+      - haptic-net
+
+  # Testing environment
+  test:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    environment:
+      - RUST_LOG=debug
+      - CARGO_TARGET_DIR=/app/target
+    command: ["cargo", "test", "--all-features"]
+    networks:
+      - haptic-net
+
+  # Code coverage
+  coverage:
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    environment:
+      - CARGO_TARGET_DIR=/app/target
+    command: ["cargo", "tarpaulin", "--out", "html", "--output-dir", "coverage"]
+    networks:
+      - haptic-net
+
+volumes:
+  cargo-cache:
+  target-cache:
+
+networks:
+  haptic-net:
+    driver: bridge
