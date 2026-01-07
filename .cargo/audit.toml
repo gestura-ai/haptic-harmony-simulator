@@ -1,0 +1,26 @@
+# Cargo audit configuration
+# This file configures cargo-audit to ignore specific vulnerabilities
+# that are false positives or cannot be fixed due to transitive dependencies
+
+[advisories]
+# Ignored advisories - these are either false positives or cannot be fixed
+# due to transitive dependencies from upstream crates (Tauri/wry/gtk-rs)
+ignore = [
+    # RUSTSEC-2024-0429: Unsoundness in Iterator and DoubleEndedIterator impls for glib::VariantStrIter
+    # This is a transitive dependency from Tauri/wry/gtk-rs ecosystem.
+    # The affected API (VariantStrIter) is not used in this project.
+    # Waiting for upstream gtk-rs to release a fix.
+    # See: https://rustsec.org/advisories/RUSTSEC-2024-0429
+    "RUSTSEC-2024-0429",
+
+    # RUSTSEC-2025-0055: tracing-subscriber ANSI escape sequence log poisoning
+    # Low severity issue - only affects log output formatting, not security.
+    # This is a direct dependency that will be updated when a compatible version is available.
+    # See: https://rustsec.org/advisories/RUSTSEC-2025-0055
+    "RUSTSEC-2025-0055",
+]
+
+# Informational warnings to ignore (unmaintained crates)
+# These are transitive dependencies from Tauri/wry that we cannot control
+informational_warnings = ["unmaintained"]
+
