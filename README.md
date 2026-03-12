@@ -18,6 +18,8 @@ The Haptic Harmony Simulation is a cutting-edge toolkit designed to simulate and
 - **CLI Interface** - Command-line tools for automated testing and scripting
 - **Gesture Emulation** - Comprehensive gesture recognition simulation
 - **Haptic Feedback** - Advanced haptic pattern generation and testing
+- **Shared Semantic Protocol** - One transport-agnostic event and command layer projected through BLE, socket, and MCP adapters
+- **Trust + Safety Policy** - Explicit trust-state transitions, revocation handling, degraded-mode gates, and privileged-command enforcement
 - **Testing Framework** - Built-in testing tools and mock services
 - **Real-time Monitoring** - Live performance metrics and system status
 
@@ -47,6 +49,37 @@ cargo run --features tauri-gui -- --mode gui
 
 # Run CLI mode
 cargo run -- --mode cli
+```
+
+### Canonical Just workflows
+
+Use the same top-level workflow names as `gestura-app` where they apply here:
+
+- `just help` - show the standardized workflow entrypoints
+- `just doctor` - inspect local build/release readiness
+- `just validate` / `just validate-quick` - run release validation gates
+- `just package` / `just package-<platform>` - build native installer artifacts
+- `just show-version`, `just sync-versions`, `just set-version X.Y.Z` - manage release version parity
+
+### Real BLE advertising on desktop platforms
+
+The simulator now contains a **native desktop BLE peripheral backend** behind the `native-ble` feature.
+
+- **Linux** uses BlueZ.
+- **macOS** uses CoreBluetooth.
+- **Windows** is wired for the same native backend surface via WinRT.
+- The in-process BLE emulation path remains available as the automatic fallback when `native-ble` is not enabled or native startup fails.
+- `linux-ble` remains available as a compatibility alias for existing Linux scripts, but new usage should prefer `native-ble`.
+
+```bash
+# macOS/Linux/Windows: expose a real BLE peripheral for gestura.app
+cargo run --features native-ble -- --mode cli
+
+# GUI + native BLE
+cargo run --features "tauri-gui,native-ble" -- --mode gui
+
+# Linux compatibility alias
+cargo run --features linux-ble -- --mode cli
 ```
 
 ### 🖥️ GUI Mode
@@ -118,6 +151,7 @@ haptic-harmony-simulation/
 │   │   └── 📄 tilt.rs              # Tilt gesture simulation
 │   ├── 📄 emulator.rs              # Core emulation logic
 │   ├── 📄 feedback.rs              # Feedback loop management
+│   ├── 📄 protocol.rs              # Shared semantic transport model and deterministic scenarios
 │   └── 📄 mcp_mock.rs              # MCP protocol simulation
 ├── 📁 ui/                          # Tauri frontend
 │   ├── � src/                     # Web UI source
@@ -154,6 +188,20 @@ haptic-harmony-simulation/
 - **Intensity and duration control**
 - **Real-time performance monitoring**
 - **Custom feedback loops**
+
+#### Shared Protocol (`src/protocol.rs`)
+- **Transport-agnostic semantic envelopes** for simulator events and commands
+- **Deterministic scenario compilation** for repeatable parity and regression testing
+- **Shared payload taxonomy** reused by BLE, socket, and MCP-facing code paths
+
+#### Trust and Safety (`src/trust.rs`)
+- **Trust-state transitions** across discovered, bonded, enrolled, attested, and revoked states
+- **Degraded-mode gating** for low battery, sensor fault, firmware mismatch, and operator blocks
+- **Privileged-action enforcement** shared by BLE and future transport ingress paths
+
+#### Transport Adapters (`src/transport_adapters.rs`)
+- **Thin projection adapters** for BLE, socket, and MCP from one semantic envelope
+- **Parity fan-out hub** for regression tests and transport-convergence validation
 
 ## Configuration
 
@@ -204,6 +252,15 @@ file_output = false
 ```bash
 # Run all tests
 cargo test
+
+# Run the converged simulator checks across all enabled features
+cargo test --all-features
+
+# Run lint checks for all targets
+cargo clippy --all-targets --all-features -- -D warnings
+
+# See the platform-aware validation and release checklist
+cat docs/VALIDATION_AND_OPERATIONS.md
 
 # Run specific test suite
 cargo test connectivity
@@ -277,7 +334,7 @@ cargo build
 cargo build --release
 
 # Build with specific features
-cargo build --features "tauri-gui,linux-ble"
+cargo build --features "tauri-gui,native-ble"
 
 # Build for different targets
 cargo build --target x86_64-apple-darwin

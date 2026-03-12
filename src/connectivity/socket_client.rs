@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::{Connection, ConnectionConfig, ConnectionState};
+use crate::protocol::{
+    HapticCommandPayload, ProtocolEnvelope, SemanticGestureEvent, SimulatorCommand, SimulatorEvent,
+    current_protocol_timestamp_ms,
+};
+use crate::transport_adapters::SocketProtocolAdapter;
 
 /// Socket client for HTTP/WebSocket communication
 pub struct SocketClient {
@@ -94,13 +99,27 @@ impl SocketClient {
 
     /// Send a gesture event to gestura.app
     pub async fn send_gesture(&self, gesture_type: &str, data: serde_json::Value) -> Result<()> {
+        let timestamp_ms = current_protocol_timestamp_ms();
+        let protocol_event = ProtocolEnvelope::event(
+            0,
+            timestamp_ms,
+            SimulatorEvent::Gesture(SemanticGestureEvent::from_legacy_parts(
+                gesture_type,
+                &data,
+                timestamp_ms,
+            )?),
+        );
+
         let message = GesturaMessage {
             message_type: "gesture".to_string(),
             session_id: self.session_id.clone(),
             timestamp: chrono::Utc::now().timestamp() as u64,
             data: serde_json::json!({
-                "gesture_type": gesture_type,
-                "gesture_data": data
+                "protocol": protocol_event,
+                "legacy": {
+                    "gesture_type": gesture_type,
+                    "gesture_data": data
+                }
             }),
         };
 
@@ -109,15 +128,44 @@ impl SocketClient {
 
     /// Send a haptic feedback request
     pub async fn send_haptic_request(&self, pattern: &str, intensity: f32) -> Result<()> {
+        let protocol_command = ProtocolEnvelope::command_now(
+            0,
+            SimulatorCommand::Haptic(HapticCommandPayload::from_legacy_parts(
+                pattern, intensity, 0,
+            )),
+        );
+
         let message = GesturaMessage {
             message_type: "haptic".to_string(),
             session_id: self.session_id.clone(),
             timestamp: chrono::Utc::now().timestamp() as u64,
             data: serde_json::json!({
-                "pattern": pattern,
-                "intensity": intensity
+                "protocol": protocol_command,
+                "legacy": {
+                    "pattern": pattern,
+                    "intensity": intensity
+                }
             }),
         };
+
+        self.send_message(message).await
+    }
+
+    /// Send a shared protocol event to gestura.app.
+    pub async fn send_protocol_event(&self, event: ProtocolEnvelope<SimulatorEvent>) -> Result<()> {
+        let adapter = SocketProtocolAdapter::new(self.session_id.clone());
+        let message = adapter.project_event(&event)?;
+
+        self.send_message(message).await
+    }
+
+    /// Send a shared protocol command to gestura.app.
+    pub async fn send_protocol_command(
+        &self,
+        command: ProtocolEnvelope<SimulatorCommand>,
+    ) -> Result<()> {
+        let adapter = SocketProtocolAdapter::new(self.session_id.clone());
+        let message = adapter.project_command(&command)?;
 
         self.send_message(message).await
     }

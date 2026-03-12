@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+use crate::protocol::{ProtocolEnvelope, SimulatorEvent};
+use crate::transport_adapters::McpProtocolAdapter;
+
 /// MCP message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -195,6 +198,15 @@ impl McpMockServer {
         };
 
         self.send_message(error_msg).await
+    }
+
+    /// Project a shared simulator event through the MCP notification surface.
+    pub async fn send_protocol_event(
+        &self,
+        event: &ProtocolEnvelope<SimulatorEvent>,
+    ) -> Result<()> {
+        let adapter = McpProtocolAdapter;
+        self.send_message(adapter.project_event(event)?).await
     }
 
     /// Internal method to send messages

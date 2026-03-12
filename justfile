@@ -9,9 +9,48 @@
 # Important: Always use --no-default-features --features cli-only for CLI builds
 #               to avoid pulling in GUI dependencies!
 
+set shell := ["bash", "-cu"]
+
 # Show available commands
-default:
-    @just --list
+default: help
+
+help:
+    @echo "just targets:"
+    @echo ""
+    @echo "🔧 Development:"
+    @echo "  help                 # show the standardized workflow commands"
+    @echo "  doctor               # print environment and release readiness info"
+    @echo "  dev                  # start GUI development with hot reload"
+    @echo "  dev-cli              # start CLI development with hot reload"
+    @echo "  build                # build the simulator's primary release artifacts"
+    @echo "  build-release        # alias for the canonical release build workflow"
+    @echo "  build-cli            # build the CLI release binary"
+    @echo "  build-gui            # build the GUI release binary"
+    @echo "  test                 # run CLI and GUI tests"
+    @echo "  clean                # clean build artifacts"
+    @echo ""
+    @echo "🧪 Validation:"
+    @echo "  validate             # run the full production validation pipeline"
+    @echo "  validate-quick       # run the fast local validation subset"
+    @echo "  verify-github-actions # verify workflow definitions and local expectations"
+    @echo ""
+    @echo "📦 Packaging & Release:"
+    @echo "  package              # package the app for the current native platform"
+    @echo "  package-macos        # build a macOS DMG on macOS"
+    @echo "  package-windows      # build Windows NSIS/MSI installers on Windows"
+    @echo "  package-linux        # build Linux AppImage/DEB/RPM packages on Linux"
+    @echo "  package-all          # print the cross-platform packaging plan"
+    @echo "  release-macos        # run the macOS release workflow"
+    @echo "  release-windows      # run the Windows release workflow"
+    @echo "  release-linux        # run the Linux release workflow"
+    @echo "  release-all          # print the canonical tagged release workflow"
+    @echo ""
+    @echo "🏷️ Versioning:"
+    @echo "  show-version         # show versions from Cargo, Tauri, and UI"
+    @echo "  sync-versions        # sync Tauri/UI versions to Cargo.toml"
+    @echo "  set-version X.Y.Z    # update Cargo.toml, tauri.conf.json, and ui/package.json"
+    @echo ""
+    @echo "ℹ️ Legacy simulator-specific recipes remain available; run 'just --list' for the full catalog."
 
 # Quick Start Commands
 # =====================
@@ -32,6 +71,10 @@ build:
     @just build-cli
     @just build-gui
 
+# Canonical release build naming used across Gestura repos
+build-release: build
+    @echo "✅ Release build complete!"
+
 # Run all tests
 test:
     @echo "Running tests..."
@@ -46,7 +89,7 @@ test:
 # Production validation - run all checks that CI will run
 validate:
     @echo "Running production validation..."
-    ./scripts/validate-production.sh
+    bash ./scripts/validate-production.sh
 
 # Quick validation - essential checks only
 validate-quick:
@@ -150,7 +193,7 @@ build-macos:
 # Icon generation
 icons:
     @echo "Generating icons from source..."
-    ./scripts/generate-icons.sh
+    bash ./scripts/generate-icons.sh
 
 # Ring Simulation Commands
 # ==========================
@@ -248,6 +291,87 @@ version:
     @echo "Just: $(just --version)"
     @echo "Platform: $(uname -s) $(uname -m)"
 
+# Canonical environment summary used across Gestura repos
+doctor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "🩺 Haptic Harmony Simulator Development Environment"
+    echo "=================================================="
+    echo ""
+    echo "🦀 Rust Toolchain:"
+    echo "  Rustc: $(rustc --version)"
+    echo "  Cargo: $(cargo --version)"
+    echo "  Just:  $(just --version)"
+    echo ""
+    echo "🌐 Frontend Tooling:"
+    echo "  Node: $(node --version 2>/dev/null || echo 'Not installed')"
+    echo "  NPM:  $(npm --version 2>/dev/null || echo 'Not installed')"
+    echo ""
+    echo "📦 Project Versions:"
+    just --quiet show-version
+    echo ""
+    echo "📁 Release Inputs:"
+    [[ -f Cargo.toml ]] && echo "  ✅ Cargo.toml" || echo "  ❌ Cargo.toml"
+    [[ -f tauri.conf.json ]] && echo "  ✅ tauri.conf.json" || echo "  ❌ tauri.conf.json"
+    [[ -f ui/package.json ]] && echo "  ✅ ui/package.json" || echo "  ❌ ui/package.json"
+    [[ -f .github/workflows/ci.yml ]] && echo "  ✅ .github/workflows/ci.yml" || echo "  ❌ .github/workflows/ci.yml"
+    [[ -f .github/workflows/release.yml ]] && echo "  ✅ .github/workflows/release.yml" || echo "  ❌ .github/workflows/release.yml"
+    echo ""
+    echo "💡 Run 'just status' for the extended simulator-specific readiness report."
+
+show-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    cargo_version="$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version'])")"
+    tauri_version="$(python3 -c "import json, pathlib; print(json.loads(pathlib.Path('tauri.conf.json').read_text())['version'])")"
+    ui_version="$(python3 -c "import json, pathlib; print(json.loads(pathlib.Path('ui/package.json').read_text())['version'])")"
+
+    echo "📋 Version sources:"
+    echo "  Cargo.toml:      ${cargo_version}"
+    echo "  tauri.conf.json: ${tauri_version}"
+    echo "  ui/package.json: ${ui_version}"
+
+    if [[ "$cargo_version" == "$tauri_version" && "$cargo_version" == "$ui_version" ]]; then
+        echo "  Status: ✅ in sync"
+    else
+        echo "  Status: ❌ mismatch detected"
+        exit 1
+    fi
+
+sync-versions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    version="$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version'])")"
+
+    python3 -c "import json, pathlib, sys; path = pathlib.Path(sys.argv[1]); data = json.loads(path.read_text()); data['version'] = sys.argv[2]; path.write_text(json.dumps(data, indent=2) + '\n')" tauri.conf.json "$version"
+    echo "Synced tauri.conf.json -> ${version}"
+    python3 -c "import json, pathlib, sys; path = pathlib.Path(sys.argv[1]); data = json.loads(path.read_text()); data['version'] = sys.argv[2]; path.write_text(json.dumps(data, indent=2) + '\n')" ui/package.json "$version"
+    echo "Synced ui/package.json -> ${version}"
+
+    just --quiet show-version
+
+set-version new_version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    version="{{new_version}}"
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+        echo "❌ Invalid semver: ${version} (expected X.Y.Z or X.Y.Z-pre.N)"
+        exit 1
+    fi
+
+    python3 -c "import pathlib, re, sys; path = pathlib.Path('Cargo.toml'); text = path.read_text(); updated, count = re.subn(r'(?m)^version = \"[^\"]+\"$', f'version = \"{sys.argv[1]}\"', text, count=1); count == 1 or (_ for _ in ()).throw(SystemExit('Could not update package version in Cargo.toml')); path.write_text(updated)" "$version"
+    echo "Updated Cargo.toml -> ${version}"
+    python3 -c "import json, pathlib, sys; path = pathlib.Path(sys.argv[1]); data = json.loads(path.read_text()); data['version'] = sys.argv[2]; path.write_text(json.dumps(data, indent=2) + '\n')" tauri.conf.json "$version"
+    echo "Updated tauri.conf.json -> ${version}"
+    python3 -c "import json, pathlib, sys; path = pathlib.Path(sys.argv[1]); data = json.loads(path.read_text()); data['version'] = sys.argv[2]; path.write_text(json.dumps(data, indent=2) + '\n')" ui/package.json "$version"
+    echo "Updated ui/package.json -> ${version}"
+
+    just --quiet show-version
+
 # CI/CD Pipeline Commands
 # ==========================
 
@@ -323,7 +447,7 @@ verify-windows-app path:
 
 # Verify icons are properly embedded in all builds
 verify-icons:
-    @./scripts/verify-icons.sh
+    @bash ./scripts/verify-icons.sh
 
 # Build for all available platforms with proper icons
 build-all-platforms:
@@ -342,7 +466,7 @@ build-all-platforms:
 
 # Verify GitHub Actions workflows are properly configured
 verify-github-actions:
-    @./scripts/verify-github-actions.sh
+    @bash ./scripts/verify-github-actions.sh
 
 # Verify Windows build requirements and SSL.com code signing
 verify-windows-build:
@@ -458,13 +582,75 @@ build-macos-app:
     @ls -la target/release/bundle/ 2>/dev/null || echo "No bundle directory found"
     @echo ""
     @echo "🔐 Checking app bundle signature:"
-    @./scripts/verify-apple-signing.sh 2>/dev/null || echo "⚠️  App bundle is not signed (development build)"
+    @bash ./scripts/verify-apple-signing.sh 2>/dev/null || echo "⚠️  App bundle is not signed (development build)"
     @echo "  To sign the app, configure Apple Developer certificate:"
     @echo "  1. Set up GitHub Secrets (see MACOS_CODE_SIGNING_SETUP.md)"
     @echo "  2. Use: just release-macos-signed"
     @echo ""
     @echo "🎨 Verifying app icons:"
     @just verify-icons
+
+# Canonical packaging workflows used across Gestura repos
+package:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    host_os="$(uname -s)"
+    case "$host_os" in
+        Darwin)
+            just package-macos
+            ;;
+        Linux)
+            just package-linux
+            ;;
+        MINGW*|MSYS*|CYGWIN*|Windows_NT)
+            just package-windows
+            ;;
+        *)
+            echo "❌ Unsupported host OS: ${host_os}"
+            exit 1
+            ;;
+    esac
+
+package-macos:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    [[ "$(uname -s)" == "Darwin" ]] || { echo "❌ package-macos must be run on macOS"; exit 1; }
+    host_target="$(rustc -vV | sed -n 's/^host: //p')"
+    (cd ui && npm ci && npm run build)
+    tauri build --target "$host_target" --features tauri-gui --bundles dmg
+
+package-windows:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*|Windows_NT) ;;
+        *) echo "❌ package-windows must be run on Windows"; exit 1 ;;
+    esac
+    host_target="$(rustc -vV | sed -n 's/^host: //p')"
+    (cd ui && npm ci && npm run build)
+    tauri build --target "$host_target" --features tauri-gui --bundles nsis,msi
+
+package-linux:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    [[ "$(uname -s)" == "Linux" ]] || { echo "❌ package-linux must be run on Linux"; exit 1; }
+    host_target="$(rustc -vV | sed -n 's/^host: //p')"
+    (cd ui && npm ci && npm run build)
+    tauri build --target "$host_target" --features tauri-gui --bundles appimage,deb,rpm
+
+package-all:
+    @echo "🌍 Cross-platform packaging is native-host or CI driven for this repo."
+    @echo ""
+    @echo "Run the native packaging recipe on each platform:"
+    @echo "  just package-macos"
+    @echo "  just package-windows"
+    @echo "  just package-linux"
+    @echo ""
+    @echo "For the canonical cross-platform path, use the GitHub Actions release matrix."
 
 # Build signed release for macOS (requires certificates)
 release-macos-signed version="0.1.0":
@@ -500,6 +686,25 @@ release-signed version="0.1.0":
     @just build-linux-arm-gui
     @echo "✅ All signed releases built!"
 
+# Canonical release workflow names used across Gestura repos
+release-macos: release-macos-signed
+    @echo "✅ macOS release workflow complete."
+
+release-windows: release-windows-signed
+    @echo "✅ Windows release workflow complete."
+
+release-linux: package-linux
+    @echo "✅ Linux release workflow complete."
+
+release-all:
+    @echo "🚀 Canonical cross-platform release workflow"
+    @echo "==========================================="
+    @echo "1. just validate"
+    @echo "2. just show-version"
+    @echo "3. just verify-github-actions"
+    @echo "4. git tag vX.Y.Z && git push origin vX.Y.Z"
+    @echo "5. Let .github/workflows/release.yml validate, package, and publish"
+
 # Advanced Commands
 # ===================
 
@@ -516,7 +721,7 @@ install-targets:
 # Build for all supported platforms using comprehensive build script
 build-all version="0.1.0": install-targets
     @echo "Building for all platforms (version {{version}})..."
-    ./scripts/build-release.sh {{version}}
+    bash ./scripts/build-release.sh {{version}}
 
 # Build individual platforms with GUI features
 build-linux-gui: install-targets

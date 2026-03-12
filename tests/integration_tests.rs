@@ -1,8 +1,14 @@
 //! Integration tests for the Gestura Ring Simulation Kit
 
+use haptic_harmony_simulation::BlePeripheral;
+use haptic_harmony_simulation::ConnectionConfig;
+use haptic_harmony_simulation::ble_peripheral::{BleGestureData, HapticCommand, ring_uuids};
 use haptic_harmony_simulation::emulator::*;
 use haptic_harmony_simulation::feedback::*;
 use haptic_harmony_simulation::mcp_mock::*;
+use haptic_harmony_simulation::protocol::*;
+use haptic_harmony_simulation::transport_adapters::*;
+use haptic_harmony_simulation::trust::*;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -185,5 +191,251 @@ async fn test_haptic_patterns() {
             assert_eq!(duration, Duration::from_millis(200));
         }
         _ => panic!("Expected Custom haptic pattern"),
+    }
+}
+
+#[tokio::test]
+async fn test_deterministic_scenario_compiles_stable_sequences() {
+    let scenario = demo_ring_interaction_scenario();
+    let compiled = scenario.compile();
+
+    assert_eq!(compiled.len(), 3);
+    assert_eq!(compiled[0].sequence, 1);
+    assert_eq!(compiled[1].sequence, 2);
+    assert_eq!(compiled[2].sequence, 3);
+    assert_eq!(compiled[0].timestamp_ms, 0);
+    assert_eq!(compiled[1].timestamp_ms, 75);
+    assert_eq!(compiled[2].timestamp_ms, 200);
+
+    match &compiled[1].payload {
+        SimulatorEvent::Gesture(event) => assert_eq!(event.gesture, SemanticGesture::Tap),
+        other => panic!("Expected gesture event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_ble_gesture_data_embeds_protocol_event() {
+    let gesture = GestureEvent {
+        gesture_type: GestureType::Slide {
+            direction: SlideDirection::Left,
+        },
+        timestamp: tokio::time::Instant::now(),
+        confidence: 0.91,
+    };
+
+    let ble_gesture = BleGestureData::from_gesture_event(&gesture, 7)
+        .expect("BLE gesture conversion should succeed");
+    let embedded: ProtocolEnvelope<SimulatorEvent> =
+        serde_json::from_slice(&ble_gesture.data).expect("embedded protocol JSON should decode");
+
+    assert_eq!(embedded.sequence, 7);
+
+    match embedded.payload {
+        SimulatorEvent::Gesture(event) => match event.gesture {
+            SemanticGesture::Slide { direction } => {
+                assert_eq!(direction, SemanticSlideDirection::Left)
+            }
+            other => panic!("Expected slide gesture, got {other:?}"),
+        },
+        other => panic!("Expected embedded gesture event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_haptic_command_protocol_round_trip() {
+    let command = HapticCommand {
+        pattern: "notify".to_string(),
+        intensity: 0.8,
+        duration_ms: 300,
+    };
+
+    let encoded = serde_json::to_vec(&command.to_protocol_envelope(11))
+        .expect("protocol encoding should succeed");
+    let decoded =
+        HapticCommand::try_from_protocol_bytes(&encoded).expect("protocol decoding should succeed");
+
+    assert_eq!(decoded.pattern, "notify");
+    assert_eq!(decoded.duration_ms, 200);
+    assert_eq!(decoded.intensity, 1.0);
+}
+
+#[tokio::test]
+async fn test_mcp_protocol_projection_uses_notification_channel() {
+    let config = McpConfig::default();
+    let mut server = McpMockServer::new(config);
+    server.start().await.expect("server should start");
+
+    let event = ProtocolEnvelope::event(
+        1,
+        42,
+        SimulatorEvent::Gesture(SemanticGestureEvent {
+            gesture: SemanticGesture::Tap,
+            confidence: 0.99,
+            timestamp_ms: 42,
+        }),
+    );
+
+    server
+        .send_protocol_event(&event)
+        .await
+        .expect("protocol projection should succeed");
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let mut saw_protocol_payload = false;
+    while let Some(message) = server.try_recv_message() {
+        if let McpMessage::Notification { content, .. } = message.message
+            && content.contains("gesture")
+            && content.contains("protocol_version")
+        {
+            saw_protocol_payload = true;
+            break;
+        }
+    }
+
+    assert!(
+        saw_protocol_payload,
+        "expected MCP notification with embedded protocol payload"
+    );
+}
+
+#[tokio::test]
+async fn test_adapter_hub_projects_same_event_across_ble_socket_and_mcp() {
+    let event = ProtocolEnvelope::event(
+        4,
+        250,
+        SimulatorEvent::Gesture(SemanticGestureEvent {
+            gesture: SemanticGesture::DoubleTap,
+            confidence: 0.97,
+            timestamp_ms: 250,
+        }),
+    );
+
+    let hub = ProtocolAdapterHub::new(Some("session-123".to_string()));
+    let projection = hub
+        .fan_out_event(&event)
+        .expect("projection should succeed");
+
+    let ble_payload: BleGestureData =
+        serde_json::from_slice(&projection.ble.payload).expect("BLE payload should decode");
+    assert_eq!(
+        projection.ble.characteristic_uuid,
+        ring_uuids::GESTURE_EVENT_UUID
+    );
+    assert_eq!(ble_payload.gesture_type, "double_tap");
+
+    let socket_event: ProtocolEnvelope<SimulatorEvent> =
+        serde_json::from_value(projection.socket.data.clone())
+            .expect("socket message should contain protocol envelope");
+    assert_eq!(socket_event.sequence, 4);
+
+    match projection.mcp {
+        McpMessage::Notification { content, .. } => {
+            assert!(content.contains("double_tap"));
+            assert!(content.contains("protocol_version"));
+        }
+        other => panic!("expected MCP notification, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_ble_peripheral_denies_haptics_when_trust_is_not_enrolled() {
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+
+    peripheral
+        .transition_trust_state(TrustState::Bonded)
+        .await
+        .expect("trust state transition should succeed");
+
+    let error = peripheral
+        .simulate_haptic_command("notify", 0.8, 300)
+        .await
+        .expect_err("bonded-only device should not allow privileged haptics");
+
+    assert!(
+        error
+            .to_string()
+            .contains("device is not enrolled for privileged command execution")
+    );
+}
+
+#[tokio::test]
+async fn test_ble_peripheral_denies_haptics_when_low_battery_degraded() {
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+
+    peripheral
+        .set_battery_level(5)
+        .await
+        .expect("battery update should succeed");
+
+    let snapshot = peripheral.get_protocol_state_snapshot().await;
+    assert!(snapshot.degraded_modes.contains(&DegradedMode::LowBattery));
+    assert!(!snapshot.privileged_actions_enabled);
+
+    let error = peripheral
+        .simulate_haptic_command("notify", 0.8, 300)
+        .await
+        .expect_err("low-battery degraded mode should block privileged haptics");
+
+    assert!(
+        error
+            .to_string()
+            .contains("device is in low-battery degraded mode")
+    );
+}
+
+#[tokio::test]
+async fn test_trust_policy_revocation_fails_closed() {
+    let mut policy = TrustPolicy::default();
+    policy.revoke("operator revoked device after integrity check failure");
+
+    let decision = policy.evaluate(PrivilegedAction::ExecuteProtocolCommand);
+    assert!(!decision.allowed);
+    assert!(
+        decision
+            .reason
+            .expect("revocation should provide a reason")
+            .contains("operator revoked device")
+    );
+}
+
+#[tokio::test]
+async fn test_state_snapshot_projection_uses_state_characteristic_and_high_priority_mcp() {
+    let snapshot = DeviceStateSnapshot {
+        battery: BatterySnapshot {
+            level_percent: 8,
+            is_charging: false,
+            voltage: 3.45,
+            temperature_celsius: 26.0,
+            health: "Fair".to_string(),
+            time_remaining_minutes: Some(12),
+        },
+        trust_state: TrustState::Enrolled,
+        degraded_modes: vec![DegradedMode::LowBattery],
+        firmware_version: "1.0.0-sim".to_string(),
+        protocol_version: SHARED_PROTOCOL_VERSION.to_string(),
+        revocation_reason: None,
+        privileged_actions_enabled: false,
+    };
+
+    let event = ProtocolEnvelope::event(9, 900, SimulatorEvent::StateSnapshot(snapshot));
+    let hub = ProtocolAdapterHub::new(None);
+    let projection = hub
+        .fan_out_event(&event)
+        .expect("state snapshot projection should succeed");
+
+    assert_eq!(
+        projection.ble.characteristic_uuid,
+        ring_uuids::STATE_SNAPSHOT_UUID
+    );
+
+    match projection.mcp {
+        McpMessage::Notification { priority, .. } => match priority {
+            NotificationPriority::High => {}
+            other => panic!("expected high-priority MCP notification, got {other:?}"),
+        },
+        other => panic!("expected MCP notification, got {other:?}"),
     }
 }

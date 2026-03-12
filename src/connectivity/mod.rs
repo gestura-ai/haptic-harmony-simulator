@@ -4,6 +4,7 @@
 
 pub mod ble_mock;
 pub mod ble_peripheral;
+mod native_ble_backend;
 pub mod socket_client;
 
 pub use ble_mock::BleMockAdapter;

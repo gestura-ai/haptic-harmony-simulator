@@ -1,216 +1,77 @@
-# 🚀 Haptic Harmony Simulator - Release Setup Complete!
+# Release setup
 
-## ✅ What's Been Implemented
+## Tagged release flow
 
-### 1. **Icon Generation System** 🎨
-- **Script**: `scripts/generate-icons.sh` (executable)
-- **Generated**: All Tauri-required icon formats from your updated `icons/icon.png`
-- **Formats**: PNG (multiple sizes), ICO (Windows), ICNS (macOS), @2x (high-DPI)
-- **Usage**: `./scripts/generate-icons.sh` or `just icons`
+The simulator now publishes releases from `.github/workflows/release.yml` only when:
 
-### 2. **Multi-Platform Build System** 🌍
-- **Enhanced CI/CD**: Updated `.github/workflows/release.yml`
-- **Architectures**: x64 and ARM64 for all platforms
-- **Platforms**: macOS, Linux, Windows
-- **Build Script**: `scripts/build-release.sh` for comprehensive builds
-- **Justfile**: Updated with new build commands
+- a tag matching `v*` is pushed, or
+- the workflow is launched manually with a matching tag input.
 
-### 3. **Package Manager Publishing** 📦
-- **Workflow**: `.github/workflows/package-managers.yml`
-- **Homebrew**: Formula in `packaging/homebrew/`
-- **Chocolatey**: Auto-generated Windows packages
-- **Winget**: Automated Windows package manager
-- **Snap**: Configuration in `snap/snapcraft.yaml`
-- **Flatpak**: Manifest `ai.gestura.HapticHarmonySimulator.yml`
-- **AppImage**: Auto-generated portable Linux binaries
+The workflow is intentionally **validate first, publish last**:
 
-### 4. **Build Targets Supported** 🎯
+1. Verify the tag matches `Cargo.toml` and `tauri.conf.json`.
+2. Run cross-platform validation on Linux, Windows, and macOS.
+3. Build signed platform bundles.
+4. Normalize bundle names and upload them as workflow artifacts.
+5. Create or update the GitHub release and attach all assets plus SHA256 checksums.
 
-#### macOS
-- ✅ Intel (x64): `x86_64-apple-darwin`
-- ✅ Apple Silicon (ARM64): `aarch64-apple-darwin`
+## Release assets
 
-#### Linux
-- ✅ Intel (x64): `x86_64-unknown-linux-gnu`
-- ✅ ARM64: `aarch64-unknown-linux-gnu`
+Tagged releases upload normalized assets directly to the GitHub release page:
 
-#### Windows
-- ✅ Intel (x64): `x86_64-pc-windows-msvc`
-- ✅ ARM64: `aarch64-pc-windows-msvc`
+- `haptic-harmony-simulation-macos-x64.dmg`
+- `haptic-harmony-simulation-macos-arm64.dmg`
+- `haptic-harmony-simulation-windows-x64.exe`
+- `haptic-harmony-simulation-windows-x64.msi`
+- `haptic-harmony-simulation-linux-x64.AppImage`
+- `haptic-harmony-simulation-linux-x64.deb`
+- `haptic-harmony-simulation-linux-x64.rpm` when available
+- CLI archives per platform/architecture
+- `haptic-harmony-simulation-SHA256SUMS.txt`
 
-### 5. **Package Managers Ready** 📋
+## Required GitHub secrets
 
-#### macOS/Linux
-- **Homebrew**: `brew install gestura-ai/tap/haptic-harmony-simulator`
+### macOS signing and notarization
 
-#### Windows
-- **Chocolatey**: `choco install haptic-harmony-simulator`
-- **Winget**: `winget install GesturaAI.HapticHarmonySimulator`
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_ID`
+- `APPLE_PASSWORD`
+- `APPLE_TEAM_ID`
 
-#### Linux
-- **Snap**: `sudo snap install haptic-harmony-simulator`
-- **Flatpak**: `flatpak install ai.gestura.HapticHarmonySimulator`
-- **AppImage**: Portable download from releases
+Tagged releases **fail closed** for macOS packaging if any of these are missing.
 
-## 🛠️ Quick Commands
+### Windows code signing
 
-### Icon Generation
-```bash
-# Generate all icons from icons/icon.png
-./scripts/generate-icons.sh
-# or
-just icons
-```
+- `WINDOWS_CERTIFICATE`
+- `WINDOWS_CERTIFICATE_PASSWORD`
 
-### Build Commands
-```bash
-# Build for all platforms
-just build-all 1.0.0
+Tagged releases **fail closed** for Windows packaging if either secret is missing.
 
-# Build for specific platforms
-just build-macos-intel
-just build-macos-arm
-just build-linux
-just build-linux-arm
-just build-windows
-just build-windows-arm
+### Optional downstream publishing secrets
 
-# Traditional builds
-just build-cli      # CLI only
-just build-gui      # GUI only
-```
+- `HOMEBREW_TAP_TOKEN`
+- `CHOCOLATEY_API_KEY`
+- `WINGET_TOKEN`
+- `SNAPCRAFT_STORE_CREDENTIALS`
 
-### Release Process
-```bash
-# 1. Update version and generate icons
-./scripts/generate-icons.sh
+If these are absent, `.github/workflows/package-managers.yml` skips the corresponding publish job instead of failing the release pipeline.
 
-# 2. Create and push tag
-git tag v1.0.0
-git push origin v1.0.0
+## Local validation before tagging
 
-# 3. CI/CD automatically:
-#    - Builds all platforms
-#    - Creates GitHub release
-#    - Publishes to package managers
-```
+Run the same supported local surface before pushing a tag:
 
-## 🔧 Setup Requirements
+- `just validate`
+- `just verify-github-actions`
+- `just show-version`
 
-### For Icon Generation
-```bash
-# macOS
-brew install imagemagick
+On Linux, `validate-production.sh` also runs `--all-features`. On macOS and Windows, the Linux-only BLE feature surface remains excluded locally and is validated in Linux CI.
 
-# Ubuntu/Debian
-sudo apt-get install imagemagick
+## Tagging a release
 
-# Optional for SVG generation
-brew install potrace  # macOS
-sudo apt-get install potrace  # Linux
-```
+just set-version 0.1.0
+git tag v0.1.0
+git push origin v0.1.0
 
-### For Cross-Platform Builds
-```bash
-# Install Rust targets
-rustup target add x86_64-apple-darwin
-rustup target add aarch64-apple-darwin
-rustup target add x86_64-unknown-linux-gnu
-rustup target add aarch64-unknown-linux-gnu
-rustup target add x86_64-pc-windows-msvc
-rustup target add aarch64-pc-windows-msvc
-
-# Linux cross-compilation (for ARM64)
-sudo apt-get install gcc-aarch64-linux-gnu
-```
-
-## 🔐 GitHub Secrets Needed
-
-For automated package manager publishing, add these secrets to your GitHub repository:
-
-```
-HOMEBREW_TAP_TOKEN     # GitHub token for Homebrew tap updates
-CHOCOLATEY_API_KEY     # Chocolatey API key for Windows packages
-WINGET_TOKEN          # GitHub token for Winget submissions
-SNAPCRAFT_TOKEN       # Snapcraft store credentials for Snap packages
-```
-
-## 📁 New File Structure
-
-```
-.github/workflows/
-├── ci.yml                    # Enhanced CI with multi-platform
-├── release.yml              # Enhanced release with all architectures
-└── package-managers.yml     # Package manager publishing
-
-scripts/
-├── generate-icons.sh        # Icon generation script
-└── build-release.sh         # Comprehensive build script
-
-packaging/
-├── flatpak/
-│   ├── ai.gestura.HapticHarmonySimulator.desktop
-│   └── ai.gestura.HapticHarmonySimulator.metainfo.xml
-└── homebrew/
-    └── haptic-harmony-simulator.rb
-
-snap/
-└── snapcraft.yaml          # Snap package configuration
-
-ai.gestura.HapticHarmonySimulator.yml  # Flatpak manifest
-docs/BUILD_SYSTEM.md         # Comprehensive documentation
-```
-
-## 🎯 What Happens on Release
-
-When you create a release (tag `v*`), the CI/CD system automatically:
-
-1. **Builds** all platform/architecture combinations
-2. **Creates** GitHub release with binaries
-3. **Updates** Homebrew formula
-4. **Publishes** to Chocolatey
-5. **Submits** to Winget
-6. **Publishes** Snap package
-7. **Creates** AppImage for Linux
-8. **Generates** checksums and archives
-
-## 🧪 Testing the Setup
-
-### Test Icon Generation
-```bash
-./scripts/generate-icons.sh
-ls -la icons/  # Should show all generated formats
-```
-
-### Test Local Build
-```bash
-# Test CLI build
-cargo build --release
-
-# Test GUI build
-cd ui && npm run build && cd ..
-cargo build --release --features tauri-gui
-```
-
-### Test Cross-Platform (if targets installed)
-```bash
-cargo build --release --target x86_64-apple-darwin --features tauri-gui
-```
-
-## 📚 Documentation
-
-- **Build System**: `docs/BUILD_SYSTEM.md` - Comprehensive guide
-- **Justfile**: Updated with all new commands
-- **README**: Should be updated with installation instructions
-
-## 🎉 Ready for First Release!
-
-Your project is now fully equipped for professional multi-platform releases with automated package manager publishing. The next time you create a release tag, everything will be built and published automatically!
-
-### Next Steps:
-1. **Test locally**: Run `./scripts/generate-icons.sh` and `just build-gui`
-2. **Set up secrets**: Add the GitHub secrets for package managers
-3. **Create first release**: Tag and push to trigger the full pipeline
-4. **Monitor**: Watch the GitHub Actions for successful builds and publishing
-
-Your Haptic Harmony Simulator is now ready for the world! 🌍✨
+After the tag build goes green, the GitHub release page becomes the source of truth for signed installers and packaged artifacts.

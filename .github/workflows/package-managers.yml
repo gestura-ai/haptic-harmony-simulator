@@ -1,295 +1,150 @@
-name: Package Manager Publishing
+name: Package Managers
 
 on:
-  workflow_run:
-    workflows: ["Release"]
+  release:
     types:
-      - completed
-    branches:
-      - main
+      - published
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to publish'
+      tag:
+        description: 'Release tag to publish from (for example v0.1.0)'
         required: true
         default: 'v0.1.0'
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: read
 
 jobs:
-  # Homebrew Formula (macOS/Linux)
+  metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Resolve tag and version
+        id: meta
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
   homebrew:
-    name: Update Homebrew Formula
-    runs-on: ubuntu-latest
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    name: Publish Homebrew formula
+    needs: metadata
+    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    runs-on: ubuntu-22.04
     steps:
-    - name: Get version
-      id: get_version
-      run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          # Get version from the latest release
-          version=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "version=${version}" >> $GITHUB_OUTPUT
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Update Homebrew formula
-      uses: mislav/bump-homebrew-formula-action@v3
-      with:
-        formula-name: haptic-harmony-simulator
-        formula-path: Formula/haptic-harmony-simulator.rb
-        homebrew-tap: gestura-ai/homebrew-tap
-        download-url: https://github.com/gestura-ai/haptic-harmony-simulation/releases/download/${{ steps.get_version.outputs.version }}/haptic-harmony-simulation-macos-x64.dmg
-        commit-message: |
-          Update haptic-harmony-simulator to ${{ steps.get_version.outputs.version }}
-          
-          Created by GitHub Actions
-      env:
-        COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Update Homebrew formula
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: haptic-harmony-simulator
+          formula-path: packaging/homebrew/haptic-harmony-simulator.rb
+          homebrew-tap: gestura-ai/homebrew-tap
+          base-branch: main
+          download-url: https://github.com/${{ github.repository }}/releases/download/${{ needs.metadata.outputs.tag }}/haptic-harmony-simulation-macos-x64.dmg
+          commit-message: 'feat(homebrew): update haptic-harmony-simulator to ${{ needs.metadata.outputs.version }}'
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
-  # Chocolatey Package (Windows)
   chocolatey:
-    name: Publish to Chocolatey
+    name: Publish Chocolatey package
+    needs: metadata
+    if: ${{ secrets.CHOCOLATEY_API_KEY != '' }}
     runs-on: windows-latest
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Get version
-      id: get_version
-      shell: bash
-      run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          # Get version from the latest release
-          version=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "version=${version}" >> $GITHUB_OUTPUT
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Chocolatey tools
+        shell: pwsh
+        run: choco install chocolatey-core.extension -y
 
-    - name: Create Chocolatey package
-      shell: powershell
-      run: |
-        $version = "${{ steps.get_version.outputs.version }}".TrimStart('v')
-        $downloadUrl = "https://github.com/gestura-ai/haptic-harmony-simulation/releases/download/${{ steps.get_version.outputs.version }}/haptic-harmony-simulation-windows-x64.exe"
-        
-        # Create chocolatey directory structure
-        New-Item -ItemType Directory -Force -Path "chocolatey"
-        New-Item -ItemType Directory -Force -Path "chocolatey/tools"
-        
-        # Create nuspec file
-        @"
-        <?xml version="1.0" encoding="utf-8"?>
-        <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
-          <metadata>
-            <id>haptic-harmony-simulator</id>
-            <version>$version</version>
-            <packageSourceUrl>https://github.com/gestura-ai/haptic-harmony-simulation</packageSourceUrl>
-            <owners>Gestura AI LLC</owners>
-            <title>Haptic Harmony Simulator</title>
-            <authors>Gestura AI LLC</authors>
-            <projectUrl>https://github.com/gestura-ai/haptic-harmony-simulation</projectUrl>
-            <iconUrl>https://raw.githubusercontent.com/gestura-ai/haptic-harmony-simulation/main/icons/icon.png</iconUrl>
-            <copyright>Copyright © 2025 Gestura AI LLC. All rights reserved.</copyright>
-            <licenseUrl>https://github.com/gestura-ai/haptic-harmony-simulation/blob/main/LICENSE</licenseUrl>
-            <requireLicenseAcceptance>false</requireLicenseAcceptance>
-            <projectSourceUrl>https://github.com/gestura-ai/haptic-harmony-simulation</projectSourceUrl>
-            <docsUrl>https://github.com/gestura-ai/haptic-harmony-simulation/blob/main/README.md</docsUrl>
-            <bugTrackerUrl>https://github.com/gestura-ai/haptic-harmony-simulation/issues</bugTrackerUrl>
-            <tags>haptic ring simulator ble bluetooth gestura development</tags>
-            <summary>Haptic Harmony Ring Simulator for developers</summary>
-            <description>
-        Advanced haptic ring simulation with BLE peripheral emulation. Features modern Tauri GUI with modular ring support (B1, A1, P1), cross-platform compatibility, and real-time gesture recognition with haptic feedback.
-            </description>
-            <releaseNotes>https://github.com/gestura-ai/haptic-harmony-simulation/releases/tag/${{ steps.get_version.outputs.version }}</releaseNotes>
-          </metadata>
-          <files>
-            <file src="tools\**" target="tools" />
-          </files>
-        </package>
-        "@ | Out-File -FilePath "chocolatey/haptic-harmony-simulator.nuspec" -Encoding UTF8
-        
-        # Create install script
-        @"
-        `$ErrorActionPreference = 'Stop'
-        `$toolsDir = "`$(Split-Path -parent `$MyInvocation.MyCommand.Definition)"
-        `$url64 = '$downloadUrl'
-        
-        `$packageArgs = @{
-          packageName   = 'haptic-harmony-simulator'
-          unzipLocation = `$toolsDir
-          fileType      = 'exe'
-          url64bit      = `$url64
-          softwareName  = 'Haptic Harmony Simulator*'
-          checksum64    = ''
-          checksumType64= 'sha256'
-          silentArgs    = '/S'
-          validExitCodes= @(0)
-        }
-        
-        Install-ChocolateyPackage @packageArgs
-        "@ | Out-File -FilePath "chocolatey/tools/chocolateyinstall.ps1" -Encoding UTF8
+      - name: Prepare package files
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          New-Item -ItemType Directory -Force -Path chocolatey\tools | Out-Null
+          @"
+          $ErrorActionPreference = 'Stop'
+          $packageArgs = @{
+            packageName = 'haptic-harmony-simulator'
+            softwareName = 'Haptic Harmony Simulator*'
+            fileType = 'exe'
+            url64bit = 'https://github.com/${{ github.repository }}/releases/download/$env:TAG/haptic-harmony-simulation-windows-x64.exe'
+            silentArgs = '/S'
+            validExitCodes = @(0)
+          }
+          Install-ChocolateyPackage @packageArgs
+          "@ | Set-Content chocolatey\tools\chocolateyinstall.ps1
 
-    - name: Pack and publish Chocolatey package
-      shell: powershell
-      run: |
-        choco pack chocolatey/haptic-harmony-simulator.nuspec --outputdirectory chocolatey
-        if ($env:CHOCOLATEY_API_KEY) {
-          choco push chocolatey/*.nupkg --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
-        } else {
-          Write-Host "CHOCOLATEY_API_KEY not set, skipping publish"
-        }
-      env:
-        CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          @"
+          <?xml version="1.0"?>
+          <package>
+            <metadata>
+              <id>haptic-harmony-simulator</id>
+              <version>$env:VERSION</version>
+              <authors>Gestura</authors>
+              <description>Haptic Harmony Ring Simulator for developers.</description>
+              <projectUrl>https://github.com/${{ github.repository }}</projectUrl>
+              <tags>gestura haptics simulator tauri</tags>
+            </metadata>
+          </package>
+          "@ | Set-Content chocolatey\haptic-harmony-simulator.nuspec
 
-  # Winget Package (Windows)
+      - name: Pack Chocolatey package
+        shell: pwsh
+        working-directory: chocolatey
+        run: choco pack
+
+      - name: Push Chocolatey package
+        shell: pwsh
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        working-directory: chocolatey
+        run: choco push *.nupkg --source https://push.chocolatey.org/ --api-key "$env:CHOCOLATEY_API_KEY"
+
   winget:
-    name: Update Winget Package
-    runs-on: ubuntu-latest
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+    name: Publish Winget manifest
+    needs: metadata
+    if: ${{ secrets.WINGET_TOKEN != '' }}
+    runs-on: windows-latest
     steps:
-    - name: Get version
-      id: get_version
-      run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          # Get version from the latest release
-          version=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "version=${version}" >> $GITHUB_OUTPUT
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish to Winget
+        uses: vedantmgoyal2009/winget-releaser@v2
+        with:
+          identifier: Gestura.HapticHarmonySimulator
+          version: ${{ needs.metadata.outputs.version }}
+          installers-regex: 'haptic-harmony-simulation-windows-x64\.(exe|msi)$'
+          token: ${{ secrets.WINGET_TOKEN }}
 
-    - name: Submit to Winget
-      uses: vedantmgoyal2009/winget-releaser@v2
-      with:
-        identifier: GesturaAI.HapticHarmonySimulator
-        version: ${{ steps.get_version.outputs.version }}
-        installers-regex: '\.exe$'
-        token: ${{ secrets.WINGET_TOKEN }}
-
-  # Snap Package (Linux)
-  snap:
-    name: Publish to Snap Store
-    runs-on: ubuntu-latest
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
+  snapcraft:
+    name: Publish Snap package
+    needs: metadata
+    if: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS != '' }}
+    runs-on: ubuntu-22.04
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Get version
-      id: get_version
-      run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          # Get version from the latest release
-          version=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "version=${version}" >> $GITHUB_OUTPUT
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish snap
+        uses: snapcore/action-build@v1
+        id: snapcraft
 
-    - name: Build and publish snap
-      uses: snapcore/action-build@v1
-      with:
-        snapcraft-channel: stable
-      env:
-        SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_TOKEN }}
-
-  # AppImage (Linux)
-  appimage:
-    name: Create AppImage
-    runs-on: ubuntu-20.04
-    if: (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') || github.event_name == 'workflow_dispatch'
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Get version
-      id: get_version
-      run: |
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          # Get version from the latest release
-          version=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "version=${version}" >> $GITHUB_OUTPUT
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libwebkit2gtk-4.1-dev \
-          build-essential \
-          curl \
-          wget \
-          file \
-          libxdo-dev \
-          libssl-dev \
-          libayatana-appindicator3-dev \
-          librsvg2-dev \
-          libudev-dev \
-          libdbus-1-dev \
-          pkg-config
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Build application
-      run: |
-        cargo build --release --features tauri-gui
-
-    - name: Create AppImage
-      run: |
-        # Download AppImage tools
-        wget -O linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-        chmod +x linuxdeploy
-        
-        # Create AppDir structure
-        mkdir -p AppDir/usr/bin
-        mkdir -p AppDir/usr/share/applications
-        mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-        
-        # Copy binary
-        cp target/release/haptic-harmony-simulation AppDir/usr/bin/
-        
-        # Copy icon
-        cp icons/256x256.png AppDir/usr/share/icons/hicolor/256x256/apps/haptic-harmony-simulator.png
-        
-        # Create desktop file
-        cat > AppDir/usr/share/applications/haptic-harmony-simulator.desktop << EOF
-        [Desktop Entry]
-        Type=Application
-        Name=Haptic Harmony Simulator
-        Comment=Haptic Harmony Ring Simulator for developers
-        Exec=haptic-harmony-simulation --mode gui
-        Icon=haptic-harmony-simulator
-        Categories=Development;
-        Terminal=false
-        EOF
-        
-        # Create AppImage
-        ./linuxdeploy --appdir AppDir --output appimage
-        
-        # Rename to standard format
-        mv Haptic_Harmony_Simulator-*.AppImage haptic-harmony-simulator-${{ steps.get_version.outputs.version }}-x86_64.AppImage
-
-    - name: Upload AppImage to release
-      run: |
-        gh release upload "${{ steps.get_version.outputs.version }}" \
-          "haptic-harmony-simulator-${{ steps.get_version.outputs.version }}-x86_64.AppImage" \
-          --clobber
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload to Snap Store
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.snapcraft.outputs.snap }}
+          release: stable

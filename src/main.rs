@@ -7,7 +7,10 @@ mod connectivity;
 mod emulator;
 mod feedback;
 mod mcp_mock;
+mod protocol;
 mod ring_specs;
+mod transport_adapters;
+mod trust;
 mod ui;
 
 #[cfg(feature = "tauri-gui")]
@@ -90,6 +93,7 @@ struct SimulationApp {
 
 impl SimulationApp {
     /// Create new simulation application
+    #[allow(dead_code)]
     fn new(config: AppConfig) -> Self {
         let feedback_loop = FeedbackLoop::new(config.feedback_config.clone());
         let connection_manager = ConnectionManager::new(config.connection_config.clone());
@@ -109,6 +113,7 @@ impl SimulationApp {
     }
 
     /// Start the simulation
+    #[allow(dead_code)]
     async fn start(&mut self) -> Result<()> {
         if self.is_running {
             return Ok(());

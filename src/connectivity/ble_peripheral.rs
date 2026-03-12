@@ -7,9 +7,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::task::JoinHandle;
 
+use crate::connectivity::native_ble_backend::NativeBleCommand;
+#[cfg(feature = "native-ble")]
+use crate::connectivity::native_ble_backend::start_native_ble_runtime;
 use crate::connectivity::{ConnectionConfig, ConnectionState};
 use crate::emulator::{GestureEvent, HapticEvent};
+use crate::protocol::{
+    BatterySnapshot, DeviceStateSnapshot, HapticCommandPayload, ProtocolEnvelope,
+    SHARED_PROTOCOL_VERSION, SemanticGestureEvent, SemanticHapticPattern, SimulatorCommand,
+    SimulatorEvent,
+};
+use crate::transport_adapters::BleProtocolAdapter;
+use crate::trust::{DegradedMode, PrivilegedAction, TrustPolicy, TrustState};
 
 /// Haptic Harmony Ring BLE service UUIDs (matching gestura.app expectations)
 pub mod ring_uuids {
@@ -21,6 +32,8 @@ pub mod ring_uuids {
     pub const GESTURE_EVENT_UUID: &str = "12345678-1234-5678-9abc-123456789abe";
     /// Battery level characteristic UUID
     pub const BATTERY_LEVEL_UUID: &str = "12345678-1234-5678-9abc-123456789abf";
+    /// State snapshot characteristic UUID
+    pub const STATE_SNAPSHOT_UUID: &str = "12345678-1234-5678-9abc-123456789ac1";
     /// OTA update characteristic UUID
     pub const OTA_UPDATE_UUID: &str = "12345678-1234-5678-9abc-123456789ac0";
 }
@@ -49,6 +62,59 @@ pub struct HapticCommand {
     pub duration_ms: u32,
 }
 
+impl HapticCommand {
+    /// Converts this legacy haptic command into the shared protocol envelope.
+    pub fn to_protocol_envelope(&self, sequence: u64) -> ProtocolEnvelope<SimulatorCommand> {
+        ProtocolEnvelope::command_now(
+            sequence,
+            SimulatorCommand::Haptic(HapticCommandPayload::from_legacy_parts(
+                &self.pattern,
+                self.intensity,
+                self.duration_ms,
+            )),
+        )
+    }
+
+    /// Attempts to parse a shared protocol command envelope from BLE bytes.
+    pub fn try_from_protocol_bytes(data: &[u8]) -> Result<Self> {
+        let envelope: ProtocolEnvelope<SimulatorCommand> = serde_json::from_slice(data)?;
+
+        match envelope.payload {
+            SimulatorCommand::Haptic(command) => Ok(Self::from(command)),
+        }
+    }
+}
+
+impl From<HapticCommandPayload> for HapticCommand {
+    fn from(value: HapticCommandPayload) -> Self {
+        match value.pattern {
+            SemanticHapticPattern::Notify => Self {
+                pattern: "notify".to_string(),
+                intensity: 1.0,
+                duration_ms: 200,
+            },
+            SemanticHapticPattern::Success => Self {
+                pattern: "success".to_string(),
+                intensity: 1.0,
+                duration_ms: 250,
+            },
+            SemanticHapticPattern::Error => Self {
+                pattern: "error".to_string(),
+                intensity: 1.0,
+                duration_ms: 300,
+            },
+            SemanticHapticPattern::Custom {
+                intensity,
+                duration_ms,
+            } => Self {
+                pattern: "custom".to_string(),
+                intensity,
+                duration_ms: duration_ms as u32,
+            },
+        }
+    }
+}
+
 /// BLE characteristic data
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -57,6 +123,7 @@ pub struct BleCharacteristic {
     pub properties: BleCharacteristicProperties,
     pub value: Arc<RwLock<Vec<u8>>>,
     pub subscribers: Arc<RwLock<Vec<String>>>,
+    pub live_notifiers: Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Vec<u8>>>>>,
 }
 
 /// BLE characteristic properties
@@ -78,6 +145,26 @@ pub struct BleGestureData {
     pub data: Vec<u8>,
 }
 
+impl BleGestureData {
+    /// Builds the BLE gesture payload while embedding the shared semantic protocol event.
+    #[allow(dead_code)]
+    pub fn from_gesture_event(gesture: &GestureEvent, sequence: u64) -> Result<Self> {
+        let semantic_event = SemanticGestureEvent::from_runtime_event(gesture);
+        let envelope = ProtocolEnvelope::event(
+            sequence,
+            semantic_event.timestamp_ms,
+            SimulatorEvent::Gesture(semantic_event.clone()),
+        );
+
+        Ok(Self {
+            gesture_type: format!("{:?}", gesture.gesture_type),
+            timestamp: semantic_event.timestamp_ms,
+            confidence: semantic_event.confidence,
+            data: serde_json::to_vec(&envelope)?,
+        })
+    }
+}
+
 /// Battery level data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BleBatteryData {
@@ -87,6 +174,21 @@ pub struct BleBatteryData {
     pub temperature: f32,
     pub health: String,
     pub time_remaining: Option<u32>, // minutes
+}
+
+impl BleBatteryData {
+    /// Converts this BLE-specific battery shape into the shared semantic snapshot.
+    #[allow(dead_code)]
+    pub fn to_protocol_snapshot(&self) -> BatterySnapshot {
+        BatterySnapshot {
+            level_percent: self.level,
+            is_charging: self.is_charging,
+            voltage: self.voltage,
+            temperature_celsius: self.temperature,
+            health: self.health.clone(),
+            time_remaining_minutes: self.time_remaining,
+        }
+    }
 }
 
 /// Battery simulation state
@@ -126,6 +228,9 @@ pub struct BlePeripheral {
     characteristics: Arc<RwLock<HashMap<String, BleCharacteristic>>>,
     device_info: Arc<RwLock<BleDeviceInfo>>,
     battery_simulator: Arc<RwLock<BatterySimulator>>,
+    safety_policy: Arc<RwLock<TrustPolicy>>,
+    runtime_command_tx: Arc<RwLock<Option<mpsc::UnboundedSender<NativeBleCommand>>>>,
+    runtime_task: Option<JoinHandle<()>>,
 }
 
 /// Connected client information
@@ -178,6 +283,7 @@ impl BlePeripheral {
                 },
                 value: Arc::new(RwLock::new(Vec::new())),
                 subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
             },
         );
 
@@ -194,6 +300,7 @@ impl BlePeripheral {
                 },
                 value: Arc::new(RwLock::new(Vec::new())),
                 subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
             },
         );
 
@@ -210,6 +317,24 @@ impl BlePeripheral {
                 },
                 value: Arc::new(RwLock::new(vec![85])), // 85% battery
                 subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
+            },
+        );
+
+        // State Snapshot Characteristic (read + notify)
+        characteristics.insert(
+            ring_uuids::STATE_SNAPSHOT_UUID.to_string(),
+            BleCharacteristic {
+                uuid: ring_uuids::STATE_SNAPSHOT_UUID.to_string(),
+                properties: BleCharacteristicProperties {
+                    read: true,
+                    write: false,
+                    notify: true,
+                    indicate: false,
+                },
+                value: Arc::new(RwLock::new(Vec::new())),
+                subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
             },
         );
 
@@ -226,6 +351,7 @@ impl BlePeripheral {
                 },
                 value: Arc::new(RwLock::new(Vec::new())),
                 subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
             },
         );
 
@@ -242,6 +368,9 @@ impl BlePeripheral {
             characteristics: Arc::new(RwLock::new(characteristics)),
             device_info: Arc::new(RwLock::new(device_info)),
             battery_simulator: Arc::new(RwLock::new(battery_simulator)),
+            safety_policy: Arc::new(RwLock::new(TrustPolicy::default())),
+            runtime_command_tx: Arc::new(RwLock::new(None)),
+            runtime_task: None,
         })
     }
 
@@ -276,6 +405,7 @@ impl BlePeripheral {
 
         // Start the advertising process
         self.setup_ble_services().await?;
+        self.update_battery_characteristic().await?;
         self.start_advertising_loop().await?;
 
         // Start battery simulation
@@ -287,6 +417,13 @@ impl BlePeripheral {
     /// Stop advertising and disconnect all clients
     pub async fn stop_advertising(&mut self) -> Result<()> {
         tracing::info!("Stopping BLE peripheral advertising");
+
+        if let Some(command_tx) = self.runtime_command_tx.write().await.take() {
+            let _ = command_tx.send(NativeBleCommand::Stop);
+        }
+        if let Some(runtime_task) = self.runtime_task.take() {
+            let _ = runtime_task.await;
+        }
 
         // Disconnect all clients
         {
@@ -309,19 +446,14 @@ impl BlePeripheral {
 
     /// Send gesture notification to connected clients
     pub async fn notify_gesture(&self, gesture: &GestureEvent) -> Result<()> {
-        // Convert gesture to BLE data format
-        let ble_gesture = BleGestureData {
-            gesture_type: format!("{:?}", gesture.gesture_type),
-            timestamp: gesture.timestamp.elapsed().as_millis() as u64,
-            confidence: 0.95, // High confidence for simulated gestures
-            data: vec![],     // Additional gesture data if needed
-        };
-
-        // Serialize to JSON for transmission
-        let gesture_data = serde_json::to_vec(&ble_gesture)?;
-
-        // Send notification via BLE characteristic
-        self.notify_characteristic(ring_uuids::GESTURE_EVENT_UUID, gesture_data)
+        let semantic_event = SemanticGestureEvent::from_runtime_event(gesture);
+        let envelope = ProtocolEnvelope::event(
+            0,
+            semantic_event.timestamp_ms,
+            SimulatorEvent::Gesture(semantic_event),
+        );
+        let frame = BleProtocolAdapter.project_event(&envelope)?;
+        self.notify_characteristic(frame.characteristic_uuid, frame.payload)
             .await?;
 
         tracing::info!("📡 Gesture notification sent: {:?}", gesture.gesture_type);
@@ -391,10 +523,22 @@ impl BlePeripheral {
             time_remaining,
         };
 
-        // Update BLE characteristic
-        let battery_bytes = serde_json::to_vec(&battery_data)?;
-        self.notify_characteristic(ring_uuids::BATTERY_LEVEL_UUID, battery_bytes)
+        drop(sim);
+
+        {
+            let mut policy = self.safety_policy.write().await;
+            policy.sync_low_battery(battery_data.level);
+        }
+
+        let envelope = ProtocolEnvelope::event(
+            0,
+            crate::protocol::current_protocol_timestamp_ms(),
+            SimulatorEvent::Battery(battery_data.to_protocol_snapshot()),
+        );
+        let frame = BleProtocolAdapter.project_event(&envelope)?;
+        self.notify_characteristic(frame.characteristic_uuid, frame.payload)
             .await?;
+        self.notify_protocol_state_snapshot().await?;
 
         Ok(())
     }
@@ -417,6 +561,7 @@ impl BlePeripheral {
         let battery_simulator = Arc::clone(&self.battery_simulator);
         let battery_level = Arc::clone(&self.battery_level);
         let characteristics = Arc::clone(&self.characteristics);
+        let runtime_command_tx = Arc::clone(&self.runtime_command_tx);
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30)); // Update every 30 seconds
@@ -428,6 +573,7 @@ impl BlePeripheral {
                     &battery_simulator,
                     &battery_level,
                     &characteristics,
+                    &runtime_command_tx,
                 )
                 .await
                 {
@@ -447,6 +593,7 @@ impl BlePeripheral {
             &self.battery_simulator,
             &self.battery_level,
             &self.characteristics,
+            &self.runtime_command_tx,
         )
         .await
     }
@@ -456,6 +603,7 @@ impl BlePeripheral {
         battery_simulator: &Arc<RwLock<BatterySimulator>>,
         battery_level: &Arc<RwLock<u8>>,
         characteristics: &Arc<RwLock<HashMap<String, BleCharacteristic>>>,
+        runtime_command_tx: &Arc<RwLock<Option<mpsc::UnboundedSender<NativeBleCommand>>>>,
     ) -> Result<()> {
         let (old_level, new_level, is_charging, voltage, temperature, health, time_remaining) = {
             let mut sim = battery_simulator.write().await;
@@ -544,9 +692,15 @@ impl BlePeripheral {
             Self::notify_characteristic_static(
                 characteristics,
                 ring_uuids::BATTERY_LEVEL_UUID,
-                battery_bytes,
+                battery_bytes.clone(),
             )
             .await?;
+            send_native_runtime_update(
+                runtime_command_tx,
+                ring_uuids::BATTERY_LEVEL_UUID,
+                battery_bytes,
+            )
+            .await;
 
             tracing::debug!("🔋 Battery simulation: {}% → {}%", old_level, new_level);
         }
@@ -576,23 +730,7 @@ impl BlePeripheral {
         let characteristics_guard = characteristics.read().await;
         if let Some(characteristic) = characteristics_guard.get(uuid) {
             if characteristic.properties.notify || characteristic.properties.indicate {
-                let subscribers = characteristic.subscribers.read().await;
-                for client_id in subscribers.iter() {
-                    tracing::info!(
-                        "📡 BLE Notification → {}: {} ({} bytes)",
-                        client_id,
-                        uuid,
-                        data.len()
-                    );
-                }
-
-                // Update characteristic value
-                {
-                    let mut value = characteristic.value.write().await;
-                    *value = data;
-                }
-
-                Ok(())
+                emit_notification_payload(characteristic, uuid, data).await
             } else {
                 anyhow::bail!("Characteristic {} does not support notifications", uuid);
             }
@@ -649,6 +787,79 @@ impl BlePeripheral {
         }
     }
 
+    /// Returns the current trust and safety policy.
+    pub async fn get_safety_policy(&self) -> TrustPolicy {
+        self.safety_policy.read().await.clone()
+    }
+
+    /// Transition the simulated device to a new trust state.
+    pub async fn transition_trust_state(&self, trust_state: TrustState) -> Result<()> {
+        {
+            let mut policy = self.safety_policy.write().await;
+            policy.transition_to(trust_state);
+        }
+        self.notify_protocol_state_snapshot().await
+    }
+
+    /// Revoke the simulated device trust.
+    pub async fn revoke_trust(&self, reason: impl Into<String>) -> Result<()> {
+        {
+            let mut policy = self.safety_policy.write().await;
+            policy.revoke(reason);
+        }
+        self.notify_protocol_state_snapshot().await
+    }
+
+    /// Enable or disable a degraded mode.
+    pub async fn set_degraded_mode(&self, mode: DegradedMode, enabled: bool) -> Result<()> {
+        {
+            let mut policy = self.safety_policy.write().await;
+            policy.set_degraded_mode(mode, enabled);
+        }
+        self.notify_protocol_state_snapshot().await
+    }
+
+    /// Update firmware compatibility status.
+    pub async fn set_firmware_compatible(&self, compatible: bool) -> Result<()> {
+        {
+            let mut policy = self.safety_policy.write().await;
+            policy.set_firmware_compatible(compatible);
+        }
+        self.notify_protocol_state_snapshot().await
+    }
+
+    /// Build the current shared protocol state snapshot.
+    pub async fn get_protocol_state_snapshot(&self) -> DeviceStateSnapshot {
+        let battery = self.get_battery_status().await.to_protocol_snapshot();
+        let policy = self.safety_policy.read().await.clone();
+        let privileged_actions_enabled = policy
+            .evaluate(PrivilegedAction::ExecuteProtocolCommand)
+            .allowed;
+
+        DeviceStateSnapshot {
+            battery,
+            trust_state: policy.trust_state,
+            degraded_modes: policy.degraded_modes,
+            firmware_version: self.firmware_version.clone(),
+            protocol_version: SHARED_PROTOCOL_VERSION.to_string(),
+            revocation_reason: policy.revocation_reason,
+            privileged_actions_enabled,
+        }
+    }
+
+    /// Notify subscribers with the current shared protocol state snapshot.
+    pub async fn notify_protocol_state_snapshot(&self) -> Result<()> {
+        let snapshot = self.get_protocol_state_snapshot().await;
+        let envelope = ProtocolEnvelope::event(
+            0,
+            crate::protocol::current_protocol_timestamp_ms(),
+            SimulatorEvent::StateSnapshot(snapshot),
+        );
+        let frame = BleProtocolAdapter.project_event(&envelope)?;
+        self.notify_characteristic(frame.characteristic_uuid, frame.payload)
+            .await
+    }
+
     /// Get firmware version
     pub fn get_firmware_version(&self) -> &str {
         &self.firmware_version
@@ -694,10 +905,16 @@ impl BlePeripheral {
                 // Handle specific characteristic writes
                 match uuid {
                     ring_uuids::HAPTIC_COMMAND_UUID => {
-                        self.handle_haptic_command(data).await?;
+                        handle_haptic_command_shared(
+                            data,
+                            &self.safety_policy,
+                            self.haptic_tx.as_ref(),
+                            &self.event_tx,
+                        )
+                        .await?;
                     }
                     ring_uuids::OTA_UPDATE_UUID => {
-                        self.handle_ota_update(data).await?;
+                        handle_ota_update_shared(data).await?;
                     }
                     _ => {
                         tracing::debug!("Unhandled characteristic write: {}", uuid);
@@ -758,22 +975,9 @@ impl BlePeripheral {
         let characteristics = self.characteristics.read().await;
         if let Some(characteristic) = characteristics.get(uuid) {
             if characteristic.properties.notify || characteristic.properties.indicate {
-                let subscribers = characteristic.subscribers.read().await;
-                for client_id in subscribers.iter() {
-                    tracing::info!(
-                        "📡 BLE Notification → {}: {} ({} bytes)",
-                        client_id,
-                        uuid,
-                        data.len()
-                    );
-                }
-
-                // Update characteristic value
-                {
-                    let mut value = characteristic.value.write().await;
-                    *value = data;
-                }
-
+                emit_notification_payload(characteristic, uuid, data.clone()).await?;
+                drop(characteristics);
+                send_native_runtime_update(&self.runtime_command_tx, uuid, data).await;
                 Ok(())
             } else {
                 anyhow::bail!("Characteristic {} does not support notifications", uuid);
@@ -791,27 +995,34 @@ impl BlePeripheral {
         tracing::info!("  Haptic Commands: {}", ring_uuids::HAPTIC_COMMAND_UUID);
         tracing::info!("  Battery Level: {}", ring_uuids::BATTERY_LEVEL_UUID);
         tracing::info!("  OTA Update: {}", ring_uuids::OTA_UPDATE_UUID);
-
-        // In a real implementation, this would create actual BLE services
-        // For now, we'll simulate the setup
         Ok(())
     }
 
     /// Start the advertising loop
     async fn start_advertising_loop(&mut self) -> Result<()> {
-        tracing::info!("BLE peripheral is now discoverable by gestura.app");
+        self.start_gesture_handler().await?;
 
-        // Update state to connected (ready for connections)
+        #[cfg(feature = "native-ble")]
+        match self.try_start_native_advertising().await {
+            Ok(()) => return Ok(()),
+            Err(error) => tracing::warn!(
+                %error,
+                "Failed to start native BLE peripheral, falling back to simulated advertising"
+            ),
+        }
+
+        self.start_mock_advertising_loop().await
+    }
+
+    async fn start_mock_advertising_loop(&self) -> Result<()> {
+        tracing::info!("BLE peripheral is now discoverable by gestura.app (simulated mode)");
+
         {
             let mut state = self.state.write().await;
             *state = ConnectionState::Connected;
         }
 
-        // Start background tasks
-        self.start_gesture_handler().await?;
-        self.start_connection_handler().await?;
-
-        Ok(())
+        self.start_connection_handler().await
     }
 
     /// Start gesture event handler
@@ -850,6 +1061,18 @@ impl BlePeripheral {
         Ok(())
     }
 
+    #[cfg(feature = "native-ble")]
+    async fn try_start_native_advertising(&mut self) -> Result<()> {
+        let runtime =
+            start_native_ble_runtime(self.clone_for_task(), self.device_name.clone()).await?;
+        *self.runtime_command_tx.write().await = Some(runtime.command_tx);
+        self.runtime_task = Some(runtime.task);
+        tracing::info!(
+            "BLE peripheral is now discoverable by gestura.app via native OS BLE advertising"
+        );
+        Ok(())
+    }
+
     /// Simulate a client connection (for testing)
     #[allow(dead_code)]
     async fn simulate_client_connection(&self) -> Result<()> {
@@ -861,6 +1084,7 @@ impl BlePeripheral {
             subscribed_characteristics: vec![
                 ring_uuids::GESTURE_EVENT_UUID.to_string(),
                 ring_uuids::BATTERY_LEVEL_UUID.to_string(),
+                ring_uuids::STATE_SNAPSHOT_UUID.to_string(),
             ],
         };
 
@@ -879,138 +1103,48 @@ impl BlePeripheral {
 
     /// Handle haptic command from gestura.app
     async fn handle_haptic_command(&self, data: Vec<u8>) -> Result<()> {
-        // Try to deserialize haptic command
-        if let Ok(command_str) = String::from_utf8(data.clone())
-            && let Ok(command) = serde_json::from_str::<HapticCommand>(&command_str)
-        {
-            // Enhanced haptic command display
-            self.display_haptic_command(&command).await;
+        handle_haptic_command_shared(
+            data,
+            &self.safety_policy,
+            self.haptic_tx.as_ref(),
+            &self.event_tx,
+        )
+        .await
+    }
 
-            // Send to haptic system if available
-            if let Some(ref haptic_tx) = self.haptic_tx {
-                let haptic_event = HapticEvent {
-                    pattern: match command.pattern.as_str() {
-                        "notify" => crate::emulator::HapticPattern::Notify,
-                        "success" => crate::emulator::HapticPattern::Success,
-                        "error" => crate::emulator::HapticPattern::Error,
-                        _ => crate::emulator::HapticPattern::Custom {
-                            intensity: command.intensity,
-                            duration: Duration::from_millis(command.duration_ms as u64),
-                        },
-                    },
-                    timestamp: tokio::time::Instant::now(),
-                };
-                let _ = haptic_tx.send(haptic_event);
-            }
+    /// Ensure a privileged action is allowed under the current trust policy.
+    async fn ensure_privileged_action_allowed(&self, action: PrivilegedAction) -> Result<()> {
+        ensure_privileged_action_allowed_shared(&self.safety_policy, action).await
+    }
 
-            return Ok(());
-        }
-
-        // Fallback: treat as raw haptic data
-        tracing::info!("📳 Raw Haptic Data Received: {} bytes", data.len());
-        self.display_raw_haptic_data(&data).await;
-        Ok(())
+    /// Process a parsed haptic command from any adapter payload.
+    async fn process_haptic_command(&self, command: HapticCommand) -> Result<()> {
+        process_haptic_command_shared(command, self.haptic_tx.as_ref()).await
     }
 
     /// Display haptic command in user-friendly format
     async fn display_haptic_command(&self, command: &HapticCommand) {
-        let intensity_bar = self.create_intensity_bar(command.intensity);
-        let pattern_emoji = match command.pattern.as_str() {
-            "notify" => "🔔",
-            "success" => "✅",
-            "error" => "❌",
-            "warning" => "⚠️",
-            "pulse" => "💓",
-            "buzz" => "📳",
-            _ => "🎛️",
-        };
-
-        tracing::info!("📳 Haptic Command from gestura.app:");
-        tracing::info!("   {} Pattern: {}", pattern_emoji, command.pattern);
-        tracing::info!(
-            "   🔊 Intensity: {:.1}% {}",
-            command.intensity * 100.0,
-            intensity_bar
-        );
-        tracing::info!("   ⏱️ Duration: {}ms", command.duration_ms);
-
-        // Simulate haptic feedback visually
-        self.simulate_haptic_feedback(command).await;
+        display_haptic_command_shared(command).await;
     }
 
     /// Display raw haptic data
     async fn display_raw_haptic_data(&self, data: &[u8]) {
-        tracing::info!("📳 Raw Haptic Data from gestura.app:");
-        tracing::info!("   📊 Size: {} bytes", data.len());
-        if data.len() <= 16 {
-            let hex_data: String = data
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            tracing::info!("   🔢 Data: {}", hex_data);
-        } else {
-            let preview: String = data[..8]
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            tracing::info!(
-                "   🔢 Preview: {} ... ({} more bytes)",
-                preview,
-                data.len() - 8
-            );
-        }
+        display_raw_haptic_data_shared(data).await;
     }
 
     /// Create visual intensity bar
     fn create_intensity_bar(&self, intensity: f32) -> String {
-        let bars = (intensity * 10.0) as usize;
-        let filled = "█".repeat(bars);
-        let empty = "░".repeat(10 - bars);
-        format!("[{filled}{empty}]")
+        create_intensity_bar(intensity)
     }
 
     /// Simulate haptic feedback visually
     async fn simulate_haptic_feedback(&self, command: &HapticCommand) {
-        let pattern = match command.pattern.as_str() {
-            "notify" => "📳 buzz",
-            "success" => "✨ gentle pulse",
-            "error" => "⚡ sharp buzz",
-            "warning" => "⚠️ double tap",
-            "pulse" => "💓 rhythmic pulse",
-            "buzz" => "📳 continuous buzz",
-            _ => "🎛️ custom pattern",
-        };
-
-        tracing::info!("   🎭 Simulating: {}", pattern);
-
-        // Visual feedback based on duration
-        if command.duration_ms > 1000 {
-            tracing::info!("   ⏳ Long haptic feedback...");
-        } else if command.duration_ms > 500 {
-            tracing::info!("   ⏱️ Medium haptic feedback...");
-        } else {
-            tracing::info!("   ⚡ Quick haptic feedback!");
-        }
+        simulate_haptic_feedback_shared(command).await;
     }
 
     /// Handle OTA update command
     async fn handle_ota_update(&self, data: Vec<u8>) -> Result<()> {
-        tracing::info!("🔄 OTA Update Command: {} bytes", data.len());
-
-        // Simulate OTA update process
-        if !data.is_empty() {
-            match data[0] {
-                0x01 => tracing::info!("🔄 OTA: Starting firmware update..."),
-                0x02 => tracing::info!("🔄 OTA: Firmware update in progress..."),
-                0x03 => tracing::info!("✅ OTA: Firmware update completed successfully"),
-                0x04 => tracing::error!("❌ OTA: Firmware update failed"),
-                _ => tracing::debug!("🔄 OTA: Unknown command: 0x{:02x}", data[0]),
-            }
-        }
-
-        Ok(())
+        handle_ota_update_shared(data).await
     }
 
     /// Simulate gesture notification
@@ -1041,8 +1175,8 @@ impl BlePeripheral {
             duration_ms,
         };
 
-        let command_data = serde_json::to_vec(&command)?;
-        self.write_characteristic(ring_uuids::HAPTIC_COMMAND_UUID, command_data)
+        let frame = BleProtocolAdapter.project_command(&command.to_protocol_envelope(0))?;
+        self.write_characteristic(frame.characteristic_uuid, frame.payload)
             .await?;
 
         Ok(())
@@ -1055,6 +1189,10 @@ impl BlePeripheral {
             event_tx: self.event_tx.clone(),
             connected_clients: self.connected_clients.clone(),
             battery_level: self.battery_level.clone(),
+            characteristics: self.characteristics.clone(),
+            safety_policy: self.safety_policy.clone(),
+            haptic_tx: self.haptic_tx.clone(),
+            runtime_command_tx: self.runtime_command_tx.clone(),
         }
     }
 }
@@ -1062,35 +1200,509 @@ impl BlePeripheral {
 /// Helper struct for async tasks
 #[derive(Clone)]
 #[allow(dead_code)]
-struct BlePeripheralTask {
+pub(crate) struct BlePeripheralTask {
     state: Arc<RwLock<ConnectionState>>,
     event_tx: broadcast::Sender<BlePeripheralEvent>,
     connected_clients: Arc<RwLock<HashMap<String, ClientConnection>>>,
     battery_level: Arc<RwLock<u8>>,
+    characteristics: Arc<RwLock<HashMap<String, BleCharacteristic>>>,
+    safety_policy: Arc<RwLock<TrustPolicy>>,
+    haptic_tx: Option<mpsc::UnboundedSender<HapticEvent>>,
+    runtime_command_tx: Arc<RwLock<Option<mpsc::UnboundedSender<NativeBleCommand>>>>,
 }
 
+#[cfg_attr(not(feature = "native-ble"), allow(dead_code))]
 impl BlePeripheralTask {
-    async fn notify_gesture(&self, gesture: &GestureEvent) -> Result<()> {
-        let clients = self.connected_clients.read().await;
+    pub(crate) async fn set_connection_state(&self, state: ConnectionState) {
+        *self.state.write().await = state;
+    }
 
-        for (client_id, client) in clients.iter() {
-            if client
-                .subscribed_characteristics
-                .contains(&ring_uuids::GESTURE_EVENT_UUID.to_string())
-            {
-                tracing::info!(
-                    "📡 BLE Notification → {}: Gesture {:?}",
-                    client_id,
-                    gesture.gesture_type
-                );
+    async fn notify_gesture(&self, gesture: &GestureEvent) -> Result<()> {
+        let semantic_event = SemanticGestureEvent::from_runtime_event(gesture);
+        let envelope = ProtocolEnvelope::event(
+            0,
+            semantic_event.timestamp_ms,
+            SimulatorEvent::Gesture(semantic_event),
+        );
+        let frame = BleProtocolAdapter.project_event(&envelope)?;
+        self.notify_characteristic(frame.characteristic_uuid, frame.payload)
+            .await
+    }
+
+    async fn simulate_client_connection(&self) -> Result<()> {
+        let client_id = format!("gestura-app-{}", uuid::Uuid::new_v4());
+
+        let client = ClientConnection {
+            client_id: client_id.clone(),
+            connected_at: std::time::Instant::now(),
+            subscribed_characteristics: vec![
+                ring_uuids::GESTURE_EVENT_UUID.to_string(),
+                ring_uuids::BATTERY_LEVEL_UUID.to_string(),
+                ring_uuids::STATE_SNAPSHOT_UUID.to_string(),
+            ],
+        };
+
+        self.connected_clients
+            .write()
+            .await
+            .insert(client_id.clone(), client);
+        let _ = self
+            .event_tx
+            .send(BlePeripheralEvent::ClientConnected(client_id));
+        Ok(())
+    }
+
+    pub(crate) async fn read_characteristic(&self, uuid: &str) -> Result<Vec<u8>> {
+        let characteristics = self.characteristics.read().await;
+        let characteristic = characteristics
+            .get(uuid)
+            .ok_or_else(|| anyhow::anyhow!("Characteristic {} not found", uuid))?;
+        Ok(characteristic.value.read().await.clone())
+    }
+
+    pub(crate) async fn write_characteristic(&self, uuid: &str, data: Vec<u8>) -> Result<()> {
+        let characteristics = self.characteristics.read().await;
+        let characteristic = characteristics
+            .get(uuid)
+            .ok_or_else(|| anyhow::anyhow!("Characteristic {} not found", uuid))?;
+        if !characteristic.properties.write {
+            anyhow::bail!("Characteristic {} is not writable", uuid);
+        }
+
+        {
+            let mut value = characteristic.value.write().await;
+            *value = data.clone();
+        }
+
+        match uuid {
+            ring_uuids::HAPTIC_COMMAND_UUID => {
+                handle_haptic_command_shared(
+                    data,
+                    &self.safety_policy,
+                    self.haptic_tx.as_ref(),
+                    &self.event_tx,
+                )
+                .await?;
             }
+            ring_uuids::OTA_UPDATE_UUID => {
+                handle_ota_update_shared(data).await?;
+            }
+            _ => {}
         }
 
         Ok(())
     }
 
-    async fn simulate_client_connection(&self) -> Result<()> {
-        // Implementation would go here for real BLE connections
+    pub(crate) async fn notify_characteristic(&self, uuid: &str, data: Vec<u8>) -> Result<()> {
+        let characteristics = self.characteristics.read().await;
+        let characteristic = characteristics
+            .get(uuid)
+            .ok_or_else(|| anyhow::anyhow!("Characteristic {} not found", uuid))?;
+        emit_notification_payload(characteristic, uuid, data.clone()).await?;
+        drop(characteristics);
+        send_native_runtime_update(&self.runtime_command_tx, uuid, data).await;
         Ok(())
+    }
+
+    pub(crate) async fn apply_subscription_update(
+        &self,
+        client_id: &str,
+        uuid: &str,
+        subscribed: bool,
+    ) -> Result<()> {
+        let characteristics = self.characteristics.read().await;
+        let characteristic = characteristics
+            .get(uuid)
+            .ok_or_else(|| anyhow::anyhow!("Characteristic {} not found", uuid))?
+            .clone();
+        drop(characteristics);
+
+        let mut emit_connected = false;
+        let mut emit_disconnected = false;
+        {
+            let mut clients = self.connected_clients.write().await;
+            if subscribed {
+                let entry = clients.entry(client_id.to_string()).or_insert_with(|| {
+                    emit_connected = true;
+                    ClientConnection {
+                        client_id: client_id.to_string(),
+                        connected_at: std::time::Instant::now(),
+                        subscribed_characteristics: Vec::new(),
+                    }
+                });
+                if !entry.subscribed_characteristics.contains(&uuid.to_string()) {
+                    entry.subscribed_characteristics.push(uuid.to_string());
+                }
+            } else if let Some(client) = clients.get_mut(client_id) {
+                client
+                    .subscribed_characteristics
+                    .retain(|existing_uuid| existing_uuid != uuid);
+                if client.subscribed_characteristics.is_empty() {
+                    clients.remove(client_id);
+                    emit_disconnected = true;
+                }
+            }
+        }
+
+        if subscribed {
+            let mut subscribers = characteristic.subscribers.write().await;
+            if !subscribers.contains(&client_id.to_string()) {
+                subscribers.push(client_id.to_string());
+            }
+        } else {
+            characteristic
+                .subscribers
+                .write()
+                .await
+                .retain(|subscriber_id| subscriber_id != client_id);
+        }
+
+        if emit_connected {
+            let _ = self
+                .event_tx
+                .send(BlePeripheralEvent::ClientConnected(client_id.to_string()));
+        }
+        let _ = self.event_tx.send(if subscribed {
+            BlePeripheralEvent::CharacteristicSubscribed(uuid.to_string())
+        } else {
+            BlePeripheralEvent::CharacteristicUnsubscribed(uuid.to_string())
+        });
+        if emit_disconnected {
+            let _ = self.event_tx.send(BlePeripheralEvent::ClientDisconnected(
+                client_id.to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    async fn register_live_notifier(
+        &self,
+        uuid: &str,
+        tx: mpsc::UnboundedSender<Vec<u8>>,
+    ) -> Result<(String, Vec<u8>)> {
+        let client_id = format!("ble-client-{}", uuid::Uuid::new_v4());
+        let characteristics = self.characteristics.read().await;
+        let characteristic = characteristics
+            .get(uuid)
+            .ok_or_else(|| anyhow::anyhow!("Characteristic {} not found", uuid))?;
+
+        if !(characteristic.properties.notify || characteristic.properties.indicate) {
+            anyhow::bail!("Characteristic {} does not support notifications", uuid);
+        }
+
+        let current_value = characteristic.value.read().await.clone();
+        characteristic
+            .live_notifiers
+            .write()
+            .await
+            .insert(client_id.clone(), tx);
+        {
+            let mut subscribers = characteristic.subscribers.write().await;
+            if !subscribers.contains(&client_id) {
+                subscribers.push(client_id.clone());
+            }
+        }
+
+        self.connected_clients.write().await.insert(
+            client_id.clone(),
+            ClientConnection {
+                client_id: client_id.clone(),
+                connected_at: std::time::Instant::now(),
+                subscribed_characteristics: vec![uuid.to_string()],
+            },
+        );
+
+        let _ = self
+            .event_tx
+            .send(BlePeripheralEvent::ClientConnected(client_id.clone()));
+        let _ = self
+            .event_tx
+            .send(BlePeripheralEvent::CharacteristicSubscribed(
+                uuid.to_string(),
+            ));
+
+        Ok((client_id, current_value))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    async fn unregister_live_notifier(&self, uuid: &str, client_id: &str) -> Result<()> {
+        let characteristics = self.characteristics.read().await;
+        let characteristic = characteristics
+            .get(uuid)
+            .ok_or_else(|| anyhow::anyhow!("Characteristic {} not found", uuid))?;
+
+        characteristic
+            .live_notifiers
+            .write()
+            .await
+            .remove(client_id);
+        characteristic
+            .subscribers
+            .write()
+            .await
+            .retain(|subscriber_id| subscriber_id != client_id);
+        self.connected_clients.write().await.remove(client_id);
+
+        let _ = self
+            .event_tx
+            .send(BlePeripheralEvent::CharacteristicUnsubscribed(
+                uuid.to_string(),
+            ));
+        let _ = self.event_tx.send(BlePeripheralEvent::ClientDisconnected(
+            client_id.to_string(),
+        ));
+
+        Ok(())
+    }
+}
+
+async fn emit_notification_payload(
+    characteristic: &BleCharacteristic,
+    uuid: &str,
+    data: Vec<u8>,
+) -> Result<()> {
+    let subscribers = characteristic.subscribers.read().await.clone();
+    for client_id in &subscribers {
+        tracing::info!(
+            "📡 BLE Notification → {}: {} ({} bytes)",
+            client_id,
+            uuid,
+            data.len()
+        );
+    }
+
+    let live_notifiers = characteristic
+        .live_notifiers
+        .read()
+        .await
+        .iter()
+        .map(|(client_id, tx)| (client_id.clone(), tx.clone()))
+        .collect::<Vec<_>>();
+    let mut stale_clients = Vec::new();
+    for (client_id, tx) in live_notifiers {
+        if tx.send(data.clone()).is_err() {
+            stale_clients.push(client_id);
+        }
+    }
+    if !stale_clients.is_empty() {
+        let mut notifiers = characteristic.live_notifiers.write().await;
+        for client_id in stale_clients {
+            notifiers.remove(&client_id);
+        }
+    }
+
+    *characteristic.value.write().await = data;
+    Ok(())
+}
+
+async fn send_native_runtime_update(
+    runtime_command_tx: &Arc<RwLock<Option<mpsc::UnboundedSender<NativeBleCommand>>>>,
+    uuid: &str,
+    data: Vec<u8>,
+) {
+    let command_tx = runtime_command_tx.read().await.clone();
+    if let Some(command_tx) = command_tx {
+        let _ = command_tx.send(NativeBleCommand::UpdateCharacteristic {
+            uuid: uuid.to_string(),
+            value: data,
+        });
+    }
+}
+
+async fn handle_haptic_command_shared(
+    data: Vec<u8>,
+    safety_policy: &Arc<RwLock<TrustPolicy>>,
+    haptic_tx: Option<&mpsc::UnboundedSender<HapticEvent>>,
+    event_tx: &broadcast::Sender<BlePeripheralEvent>,
+) -> Result<()> {
+    if let Ok(command) = HapticCommand::try_from_protocol_bytes(&data) {
+        ensure_privileged_action_allowed_shared(safety_policy, PrivilegedAction::HapticCommand)
+            .await?;
+        let _ = event_tx.send(BlePeripheralEvent::HapticCommandReceived(command.clone()));
+        process_haptic_command_shared(command, haptic_tx).await?;
+        return Ok(());
+    }
+
+    if let Ok(command_str) = String::from_utf8(data.clone())
+        && let Ok(command) = serde_json::from_str::<HapticCommand>(&command_str)
+    {
+        ensure_privileged_action_allowed_shared(safety_policy, PrivilegedAction::HapticCommand)
+            .await?;
+        let _ = event_tx.send(BlePeripheralEvent::HapticCommandReceived(command.clone()));
+        process_haptic_command_shared(command, haptic_tx).await?;
+        return Ok(());
+    }
+
+    tracing::info!("📳 Raw Haptic Data Received: {} bytes", data.len());
+    display_raw_haptic_data_shared(&data).await;
+    Ok(())
+}
+
+async fn ensure_privileged_action_allowed_shared(
+    safety_policy: &Arc<RwLock<TrustPolicy>>,
+    action: PrivilegedAction,
+) -> Result<()> {
+    let decision = safety_policy.read().await.evaluate(action);
+    if decision.allowed {
+        return Ok(());
+    }
+
+    let reason = decision
+        .reason
+        .unwrap_or_else(|| "privileged action denied by safety policy".to_string());
+    tracing::warn!("Denied privileged BLE action: {}", reason);
+    anyhow::bail!(reason)
+}
+
+async fn process_haptic_command_shared(
+    command: HapticCommand,
+    haptic_tx: Option<&mpsc::UnboundedSender<HapticEvent>>,
+) -> Result<()> {
+    display_haptic_command_shared(&command).await;
+
+    if let Some(haptic_tx) = haptic_tx {
+        let haptic_event = HapticEvent {
+            pattern: match command.pattern.as_str() {
+                "notify" => crate::emulator::HapticPattern::Notify,
+                "success" => crate::emulator::HapticPattern::Success,
+                "error" => crate::emulator::HapticPattern::Error,
+                _ => crate::emulator::HapticPattern::Custom {
+                    intensity: command.intensity,
+                    duration: Duration::from_millis(command.duration_ms as u64),
+                },
+            },
+            timestamp: tokio::time::Instant::now(),
+        };
+        let _ = haptic_tx.send(haptic_event);
+    }
+
+    Ok(())
+}
+
+async fn display_haptic_command_shared(command: &HapticCommand) {
+    let intensity_bar = create_intensity_bar(command.intensity);
+    let pattern_emoji = match command.pattern.as_str() {
+        "notify" => "🔔",
+        "success" => "✅",
+        "error" => "❌",
+        "warning" => "⚠️",
+        "pulse" => "💓",
+        "buzz" => "📳",
+        _ => "🎛️",
+    };
+
+    tracing::info!("📳 Haptic Command from gestura.app:");
+    tracing::info!("   {} Pattern: {}", pattern_emoji, command.pattern);
+    tracing::info!(
+        "   🔊 Intensity: {:.1}% {}",
+        command.intensity * 100.0,
+        intensity_bar
+    );
+    tracing::info!("   ⏱️ Duration: {}ms", command.duration_ms);
+
+    simulate_haptic_feedback_shared(command).await;
+}
+
+async fn display_raw_haptic_data_shared(data: &[u8]) {
+    tracing::info!("📳 Raw Haptic Data from gestura.app:");
+    tracing::info!("   📊 Size: {} bytes", data.len());
+    if data.len() <= 16 {
+        let hex_data: String = data
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::info!("   🔢 Data: {}", hex_data);
+    } else {
+        let preview: String = data[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::info!(
+            "   🔢 Preview: {} ... ({} more bytes)",
+            preview,
+            data.len() - 8
+        );
+    }
+}
+
+fn create_intensity_bar(intensity: f32) -> String {
+    let bars = (intensity * 10.0) as usize;
+    let filled = "█".repeat(bars);
+    let empty = "░".repeat(10 - bars);
+    format!("[{filled}{empty}]")
+}
+
+async fn simulate_haptic_feedback_shared(command: &HapticCommand) {
+    let pattern = match command.pattern.as_str() {
+        "notify" => "📳 buzz",
+        "success" => "✨ gentle pulse",
+        "error" => "⚡ sharp buzz",
+        "warning" => "⚠️ double tap",
+        "pulse" => "💓 rhythmic pulse",
+        "buzz" => "📳 continuous buzz",
+        _ => "🎛️ custom pattern",
+    };
+
+    tracing::info!("   🎭 Simulating: {}", pattern);
+
+    if command.duration_ms > 1000 {
+        tracing::info!("   ⏳ Long haptic feedback...");
+    } else if command.duration_ms > 500 {
+        tracing::info!("   ⏱️ Medium haptic feedback...");
+    } else {
+        tracing::info!("   ⚡ Quick haptic feedback!");
+    }
+}
+
+async fn handle_ota_update_shared(data: Vec<u8>) -> Result<()> {
+    tracing::info!("🔄 OTA Update Command: {} bytes", data.len());
+
+    if !data.is_empty() {
+        match data[0] {
+            0x01 => tracing::info!("🔄 OTA: Starting firmware update..."),
+            0x02 => tracing::info!("🔄 OTA: Firmware update in progress..."),
+            0x03 => tracing::info!("✅ OTA: Firmware update completed successfully"),
+            0x04 => tracing::error!("❌ OTA: Firmware update failed"),
+            _ => tracing::debug!("🔄 OTA: Unknown command: 0x{:02x}", data[0]),
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn notify_characteristic_delivers_to_live_notifiers() {
+        let peripheral = BlePeripheral::new(ConnectionConfig::default()).unwrap();
+        let task = peripheral.clone_for_task();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let (client_id, _) = task
+            .register_live_notifier(ring_uuids::BATTERY_LEVEL_UUID, tx)
+            .await
+            .unwrap();
+        task.notify_characteristic(ring_uuids::BATTERY_LEVEL_UUID, vec![1, 2, 3])
+            .await
+            .unwrap();
+
+        assert_eq!(rx.recv().await.unwrap(), vec![1, 2, 3]);
+        assert_eq!(
+            peripheral
+                .read_characteristic(ring_uuids::BATTERY_LEVEL_UUID)
+                .await
+                .unwrap(),
+            vec![1, 2, 3]
+        );
+
+        task.unregister_live_notifier(ring_uuids::BATTERY_LEVEL_UUID, &client_id)
+            .await
+            .unwrap();
     }
 }

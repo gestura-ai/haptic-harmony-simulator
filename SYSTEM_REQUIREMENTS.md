@@ -67,11 +67,11 @@ The project includes Bluetooth Low Energy simulation features that may require a
   - Ubuntu/Debian: `sudo apt install libdbus-1-dev`
   - RHEL/CentOS: `sudo yum install dbus-devel`
 
-- **macOS**: No additional dependencies (uses system frameworks)
+- **macOS**: No additional dependencies for `native-ble` (uses CoreBluetooth system frameworks)
 
-- **Windows**: No additional dependencies (uses Windows APIs)
+- **Windows**: No additional dependencies for `native-ble` (uses WinRT system APIs)
 
-**Note**: BLE features are mocked for simulation purposes and don't require actual Bluetooth hardware.
+**Note**: By default the simulator can still run with mocked/in-process BLE behavior. Enabling `native-ble` turns on real desktop BLE peripheral advertising for Linux, macOS, and Windows.
 
 ### GUI Features (Tauri)
 When the GUI features are enabled, additional system dependencies may be required:

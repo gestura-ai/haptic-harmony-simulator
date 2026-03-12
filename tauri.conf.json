@@ -27,7 +27,6 @@
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval'"
     }
-
   },
   "bundle": {
     "active": true,
@@ -58,15 +57,17 @@
       },
       "wix": {
         "language": "en-US",
-        "template": "main.wxs",
-        "componentRefs": ["WebView2"],
+        "componentRefs": [
+          "WebView2"
+        ],
         "bannerPath": null,
         "dialogImagePath": null
       },
       "nsis": {
         "displayLanguageSelector": false,
-        "languages": ["English"],
-        "template": "installer.nsi",
+        "languages": [
+          "English"
+        ],
         "installerIcon": "icons/icon.ico",
         "installMode": "perMachine"
       }
@@ -96,7 +97,13 @@
     },
     "linux": {
       "deb": {
-        "depends": ["libbluetooth-dev", "libwebkit2gtk-4.1-0", "libxdo3", "libayatana-appindicator3-1", "librsvg2-2"]
+        "depends": [
+          "libbluetooth-dev",
+          "libwebkit2gtk-4.1-0",
+          "libxdo3",
+          "libayatana-appindicator3-1",
+          "librsvg2-2"
+        ]
       },
       "appimage": {
         "bundleMediaFramework": false

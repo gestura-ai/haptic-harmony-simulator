@@ -113,6 +113,12 @@ jobs:
         echo "Running unit tests..."
         cargo test --verbose --no-default-features --features cli-only
 
+    - name: Run all-features tests (Linux)
+      if: matrix.os == 'ubuntu-22.04' && matrix.rust == 'stable'
+      run: |
+        echo "Running full all-features test matrix on Linux..."
+        cargo test --all-features --verbose
+
     - name: Run tests with GUI features
       if: matrix.rust == 'stable'
       run: |
@@ -124,6 +130,12 @@ jobs:
         echo "Building CLI version..."
         cargo build --release --features cli-only
 
+    - name: Run clippy (all features, Linux)
+      if: matrix.os == 'ubuntu-22.04' && matrix.rust == 'stable'
+      run: |
+        echo "Running all-features clippy on Linux..."
+        cargo clippy --all-targets --all-features -- -D warnings
+
     - name: Build frontend
       if: matrix.rust == 'stable'
       run: |
@@ -133,7 +145,7 @@ jobs:
     - name: Verify icon configuration
       if: matrix.rust == 'stable'
       run: |
-        echo "🎨 Verifying icon configuration..."
+        echo "Verifying icon configuration..."
         chmod +x scripts/verify-icons.sh
         ./scripts/verify-icons.sh
 
@@ -146,7 +158,7 @@ jobs:
     - name: Test Tauri build (macOS only)
       if: matrix.rust == 'stable' && matrix.os == 'macos-latest'
       run: |
-        echo "🍎 Testing Tauri app bundle creation..."
+        echo "Testing Tauri app bundle creation..."
         tauri build --features tauri-gui
 
         # Verify app bundle was created

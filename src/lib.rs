@@ -36,7 +36,10 @@ pub mod connectivity;
 pub mod emulator;
 pub mod feedback;
 pub mod mcp_mock;
+pub mod protocol;
 pub mod ring_specs;
+pub mod transport_adapters;
+pub mod trust;
 pub mod ui;
 
 #[cfg(feature = "tauri-gui")]
@@ -51,6 +54,9 @@ pub use emulator::{
 };
 pub use feedback::*;
 pub use mcp_mock::*;
+pub use protocol::*;
 pub use ring_specs::HapticPattern as RingHapticPattern;
 pub use ring_specs::{RingSpec, RingSpecManager, RingType};
+pub use transport_adapters::*;
+pub use trust::*;
 pub use ui::*;
