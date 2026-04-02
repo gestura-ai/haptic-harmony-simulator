@@ -1,5 +1,7 @@
 # Release setup
 
+For the canonical workflow reference, see `docs/RELEASE_WORKFLOW.md`.
+
 ## Tagged release flow
 
 The simulator now publishes releases from `.github/workflows/release.yml` only when:

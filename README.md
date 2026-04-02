@@ -61,6 +61,8 @@ Use the same top-level workflow names as `gestura-app` where they apply here:
 - `just package` / `just package-<platform>` - build native installer artifacts
 - `just show-version`, `just sync-versions`, `just set-version X.Y.Z` - manage release version parity
 
+See `docs/RELEASE_WORKFLOW.md` for the canonical GitHub release and package-manager publishing flow.
+
 ### Real BLE advertising on desktop platforms
 
 The simulator now contains a **native desktop BLE peripheral backend** behind the `native-ble` feature.

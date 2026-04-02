@@ -18,6 +18,19 @@
 
 The optional `native-ble` path now routes through a cross-platform GATT/peripheral abstraction that maps to BlueZ on Linux, CoreBluetooth on macOS, and WinRT on Windows. `linux-ble` remains as a Linux compatibility alias, but new validation and release automation should target `native-ble` across desktop platforms.
 
+### macOS same-host validation note
+
+On macOS, native BLE startup can succeed while same-host discovery still remains unreliable when the central and peripheral both run on the same machine. In practice:
+
+- `haptic-harmony-simulator` may reach the native CoreBluetooth advertising state successfully
+- a CoreBluetooth/btleplug central on that same Mac may still fail to surface the simulator peripheral
+
+For authoritative macOS validation, prefer cross-device workflows:
+
+1. host the simulator on one Mac and scan from another Mac
+2. host the simulator on one Mac and scan from iPhone/iPad
+3. treat bundled-app startup on the same Mac as a useful smoke check, not proof of discoverability
+
 ### Tagged release gates
 
 Before a GitHub release is created, the tag workflow now requires:
