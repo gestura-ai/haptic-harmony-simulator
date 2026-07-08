@@ -15,27 +15,33 @@ use crate::connectivity::native_ble_backend::start_native_ble_runtime;
 use crate::connectivity::{ConnectionConfig, ConnectionState};
 use crate::emulator::{GestureEvent, HapticEvent};
 use crate::protocol::{
-    BatterySnapshot, DeviceStateSnapshot, HapticCommandPayload, ProtocolEnvelope,
-    SHARED_PROTOCOL_VERSION, SemanticGestureEvent, SemanticHapticPattern, SimulatorCommand,
-    SimulatorEvent,
+    AckPayload, AckStatus, BatterySnapshot, DeviceStateSnapshot, HapticCommandPayload,
+    ProtocolEnvelope, SHARED_PROTOCOL_VERSION, SemanticGestureEvent, SemanticHapticPattern,
+    SimulatorCommand, SimulatorEvent,
 };
 use crate::transport_adapters::BleProtocolAdapter;
 use crate::trust::{DegradedMode, PrivilegedAction, TrustPolicy, TrustState};
 
-/// Haptic Harmony Ring BLE service UUIDs (matching gestura.app expectations)
+/// Haptic Harmony Ring BLE service UUIDs — FINAL joint allocation (user
+/// decision 2026-07-02, firmware-minted base). Canonical source:
+/// gestura-app SDK `gestura-core-ring::protocol::ring_uuids`; keep in sync.
 pub mod ring_uuids {
-    /// Main haptic service UUID
-    pub const HAPTIC_SERVICE_UUID: &str = "12345678-1234-5678-9abc-123456789abc";
-    /// Haptic command characteristic UUID
-    pub const HAPTIC_COMMAND_UUID: &str = "12345678-1234-5678-9abc-123456789abd";
-    /// Gesture event characteristic UUID  
-    pub const GESTURE_EVENT_UUID: &str = "12345678-1234-5678-9abc-123456789abe";
-    /// Battery level characteristic UUID
-    pub const BATTERY_LEVEL_UUID: &str = "12345678-1234-5678-9abc-123456789abf";
-    /// State snapshot characteristic UUID
-    pub const STATE_SNAPSHOT_UUID: &str = "12345678-1234-5678-9abc-123456789ac1";
-    /// OTA update characteristic UUID
-    pub const OTA_UPDATE_UUID: &str = "12345678-1234-5678-9abc-123456789ac0";
+    /// Main ring service UUID
+    pub const HAPTIC_SERVICE_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9bc";
+    /// Haptic command characteristic UUID (write, trust-gated)
+    pub const HAPTIC_COMMAND_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9bd";
+    /// Gesture event characteristic UUID (notify)
+    pub const GESTURE_EVENT_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9be";
+    /// Battery level characteristic UUID (read + notify)
+    pub const BATTERY_LEVEL_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9bf";
+    /// OTA update characteristic UUID (write + indicate)
+    pub const OTA_UPDATE_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9c0";
+    /// State snapshot characteristic UUID (read + notify)
+    pub const STATE_SNAPSHOT_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9c1";
+    /// Config characteristic UUID (write, encrypted/trust-gated)
+    pub const CONFIG_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9c2";
+    /// Opt-in raw sensor stream UUID (notify; subscription trust-gated)
+    pub const RAW_SENSOR_STREAM_UUID: &str = "e3b742d4-51c9-4f0e-9d26-7a48c1f0b9c3";
 }
 
 /// BLE peripheral events
@@ -87,14 +93,11 @@ impl HapticCommand {
 
 impl From<HapticCommandPayload> for HapticCommand {
     fn from(value: HapticCommandPayload) -> Self {
+        // Preset intensities/durations are placeholder feel values — actual
+        // waveform feel is an open cross-lane tuning item.
         match value.pattern {
-            SemanticHapticPattern::Notify => Self {
-                pattern: "notify".to_string(),
-                intensity: 1.0,
-                duration_ms: 200,
-            },
-            SemanticHapticPattern::Success => Self {
-                pattern: "success".to_string(),
+            SemanticHapticPattern::Confirm => Self {
+                pattern: "confirm".to_string(),
                 intensity: 1.0,
                 duration_ms: 250,
             },
@@ -102,6 +105,26 @@ impl From<HapticCommandPayload> for HapticCommand {
                 pattern: "error".to_string(),
                 intensity: 1.0,
                 duration_ms: 300,
+            },
+            SemanticHapticPattern::Tick => Self {
+                pattern: "tick".to_string(),
+                intensity: 1.0,
+                duration_ms: 100,
+            },
+            SemanticHapticPattern::DoubleTick => Self {
+                pattern: "double_tick".to_string(),
+                intensity: 1.0,
+                duration_ms: 250,
+            },
+            SemanticHapticPattern::Waveform {
+                ref data,
+                sample_rate_hz,
+                intensity,
+            } => Self {
+                pattern: "waveform".to_string(),
+                intensity,
+                duration_ms: crate::protocol::waveform_playback_duration(data, sample_rate_hz)
+                    .as_millis() as u32,
             },
             SemanticHapticPattern::Custom {
                 intensity,
@@ -348,6 +371,50 @@ impl BlePeripheral {
                     write: true,
                     notify: false,
                     indicate: true,
+                },
+                value: Arc::new(RwLock::new(Vec::new())),
+                subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
+            },
+        );
+
+        // Config Characteristic (read+write; both trust-gated — link-layer
+        // encryption is enforced by the real ring's BLE stack, the simulator
+        // enforces the trust gate at read/write time).
+        // READ support: readable-C2, RATIFIED 2026-07-08 — hosts
+        // read-modify-write instead of clobbering config with defaults.
+        // The simulator gates at Enrolled (reference-stricter); the wire
+        // contract's device guarantee is Bonded (see PROTOCOL.md).
+        // Value seeded with the default config
+        // [sensitivity, raw-stream, gesture-mask, HID=on].
+        characteristics.insert(
+            ring_uuids::CONFIG_UUID.to_string(),
+            BleCharacteristic {
+                uuid: ring_uuids::CONFIG_UUID.to_string(),
+                properties: BleCharacteristicProperties {
+                    read: true,
+                    write: true,
+                    notify: false,
+                    indicate: false,
+                },
+                value: Arc::new(RwLock::new(vec![0x80, 0x00, 0xFF, 0x01])),
+                subscribers: Arc::new(RwLock::new(Vec::new())),
+                live_notifiers: Arc::new(RwLock::new(HashMap::new())),
+            },
+        );
+
+        // Raw Sensor Stream Characteristic (notify; opt-in via config AND
+        // subscription trust-gated at Bonded or better — raw IMU data is the
+        // most privacy-sensitive channel on the device)
+        characteristics.insert(
+            ring_uuids::RAW_SENSOR_STREAM_UUID.to_string(),
+            BleCharacteristic {
+                uuid: ring_uuids::RAW_SENSOR_STREAM_UUID.to_string(),
+                properties: BleCharacteristicProperties {
+                    read: false,
+                    write: false,
+                    notify: true,
+                    indicate: false,
                 },
                 value: Arc::new(RwLock::new(Vec::new())),
                 subscribers: Arc::new(RwLock::new(Vec::new())),
@@ -877,6 +944,18 @@ impl BlePeripheral {
 
     /// Read characteristic value
     pub async fn read_characteristic(&self, uuid: &str) -> Result<Vec<u8>> {
+        // Config reads are trust-gated like config writes (readable-C2,
+        // ratified 2026-07-08) — config contents reveal device posture.
+        // Simulator gates at Enrolled (reference-stricter than the bonded
+        // device guarantee).
+        if uuid == ring_uuids::CONFIG_UUID {
+            ensure_privileged_action_allowed_shared(
+                &self.safety_policy,
+                PrivilegedAction::ExecuteProtocolCommand,
+            )
+            .await?;
+        }
+
         let characteristics = self.characteristics.read().await;
         if let Some(characteristic) = characteristics.get(uuid) {
             if characteristic.properties.read {
@@ -893,6 +972,17 @@ impl BlePeripheral {
 
     /// Write characteristic value
     pub async fn write_characteristic(&self, uuid: &str, data: Vec<u8>) -> Result<()> {
+        // Config writes are trust-gated BEFORE the value is stored — with
+        // readable C2, a denied write must not persist state a later read
+        // would expose.
+        if uuid == ring_uuids::CONFIG_UUID {
+            ensure_privileged_action_allowed_shared(
+                &self.safety_policy,
+                PrivilegedAction::ExecuteProtocolCommand,
+            )
+            .await?;
+        }
+
         let characteristics = self.characteristics.read().await;
         if let Some(characteristic) = characteristics.get(uuid) {
             if characteristic.properties.write {
@@ -905,16 +995,33 @@ impl BlePeripheral {
                 // Handle specific characteristic writes
                 match uuid {
                     ring_uuids::HAPTIC_COMMAND_UUID => {
-                        handle_haptic_command_shared(
+                        let sequence = haptic_command_sequence(&data);
+                        let result = handle_haptic_command_shared(
                             data,
                             &self.safety_policy,
                             self.haptic_tx.as_ref(),
                             &self.event_tx,
                         )
-                        .await?;
+                        .await;
+                        // v0.3.0: acknowledge the command (ok or denied) so
+                        // policy denials are visible to the host.
+                        drop(characteristics);
+                        if let Some(payload) = build_haptic_ack_payload(sequence, &result)
+                            && let Err(notify_error) = self
+                                .notify_characteristic(ring_uuids::STATE_SNAPSHOT_UUID, payload)
+                                .await
+                        {
+                            tracing::debug!("Failed to notify command ack: {notify_error}");
+                        }
+                        result?;
                     }
                     ring_uuids::OTA_UPDATE_UUID => {
                         handle_ota_update_shared(data).await?;
+                    }
+                    ring_uuids::CONFIG_UUID => {
+                        // Trust gate already enforced at the top of this fn,
+                        // before the value was stored.
+                        log_config_write(&data);
                     }
                     _ => {
                         tracing::debug!("Unhandled characteristic write: {}", uuid);
@@ -932,6 +1039,16 @@ impl BlePeripheral {
 
     /// Subscribe to characteristic notifications
     pub async fn subscribe_characteristic(&self, uuid: &str, client_id: String) -> Result<()> {
+        // Raw sensor stream subscriptions are trust-gated (Bonded or better),
+        // mirroring the real ring's enforcement.
+        if uuid == ring_uuids::RAW_SENSOR_STREAM_UUID {
+            ensure_privileged_action_allowed_shared(
+                &self.safety_policy,
+                PrivilegedAction::SensitiveDiagnostics,
+            )
+            .await?;
+        }
+
         let characteristics = self.characteristics.read().await;
         if let Some(characteristic) = characteristics.get(uuid) {
             if characteristic.properties.notify || characteristic.properties.indicate {
@@ -1101,15 +1218,24 @@ impl BlePeripheral {
         Ok(())
     }
 
-    /// Handle haptic command from gestura.app
+    /// Handle haptic command from gestura.app (acknowledged, v0.3.0).
     async fn handle_haptic_command(&self, data: Vec<u8>) -> Result<()> {
-        handle_haptic_command_shared(
+        let sequence = haptic_command_sequence(&data);
+        let result = handle_haptic_command_shared(
             data,
             &self.safety_policy,
             self.haptic_tx.as_ref(),
             &self.event_tx,
         )
-        .await
+        .await;
+        if let Some(payload) = build_haptic_ack_payload(sequence, &result)
+            && let Err(notify_error) = self
+                .notify_characteristic(ring_uuids::STATE_SNAPSHOT_UUID, payload)
+                .await
+        {
+            tracing::debug!("Failed to notify command ack: {notify_error}");
+        }
+        result
     }
 
     /// Ensure a privileged action is allowed under the current trust policy.
@@ -1253,6 +1379,16 @@ impl BlePeripheralTask {
     }
 
     pub(crate) async fn read_characteristic(&self, uuid: &str) -> Result<Vec<u8>> {
+        // Config reads are trust-gated like config writes (readable-C2,
+        // ratified 2026-07-08).
+        if uuid == ring_uuids::CONFIG_UUID {
+            ensure_privileged_action_allowed_shared(
+                &self.safety_policy,
+                PrivilegedAction::ExecuteProtocolCommand,
+            )
+            .await?;
+        }
+
         let characteristics = self.characteristics.read().await;
         let characteristic = characteristics
             .get(uuid)
@@ -1261,6 +1397,16 @@ impl BlePeripheralTask {
     }
 
     pub(crate) async fn write_characteristic(&self, uuid: &str, data: Vec<u8>) -> Result<()> {
+        // Config writes are trust-gated BEFORE the value is stored (see the
+        // public write_characteristic for rationale).
+        if uuid == ring_uuids::CONFIG_UUID {
+            ensure_privileged_action_allowed_shared(
+                &self.safety_policy,
+                PrivilegedAction::ExecuteProtocolCommand,
+            )
+            .await?;
+        }
+
         let characteristics = self.characteristics.read().await;
         let characteristic = characteristics
             .get(uuid)
@@ -1274,18 +1420,33 @@ impl BlePeripheralTask {
             *value = data.clone();
         }
 
+        drop(characteristics);
         match uuid {
             ring_uuids::HAPTIC_COMMAND_UUID => {
-                handle_haptic_command_shared(
+                let sequence = haptic_command_sequence(&data);
+                let result = handle_haptic_command_shared(
                     data,
                     &self.safety_policy,
                     self.haptic_tx.as_ref(),
                     &self.event_tx,
                 )
-                .await?;
+                .await;
+                // v0.3.0: acknowledge the command (ok or denied).
+                if let Some(payload) = build_haptic_ack_payload(sequence, &result)
+                    && let Err(notify_error) = self
+                        .notify_characteristic(ring_uuids::STATE_SNAPSHOT_UUID, payload)
+                        .await
+                {
+                    tracing::debug!("Failed to notify command ack: {notify_error}");
+                }
+                result?;
             }
             ring_uuids::OTA_UPDATE_UUID => {
                 handle_ota_update_shared(data).await?;
+            }
+            ring_uuids::CONFIG_UUID => {
+                // Trust gate already enforced at the top of this fn.
+                log_config_write(&data);
             }
             _ => {}
         }
@@ -1310,6 +1471,16 @@ impl BlePeripheralTask {
         uuid: &str,
         subscribed: bool,
     ) -> Result<()> {
+        // Raw sensor stream subscriptions are trust-gated (Bonded or better),
+        // mirroring the real ring's enforcement.
+        if subscribed && uuid == ring_uuids::RAW_SENSOR_STREAM_UUID {
+            ensure_privileged_action_allowed_shared(
+                &self.safety_policy,
+                PrivilegedAction::SensitiveDiagnostics,
+            )
+            .await?;
+        }
+
         let characteristics = self.characteristics.read().await;
         let characteristic = characteristics
             .get(uuid)
@@ -1511,6 +1682,62 @@ async fn send_native_runtime_update(
     }
 }
 
+/// Decodes and logs a Config characteristic write.
+/// Layout: [0]=sensitivity [1]=raw-stream opt-in [2]=gesture mask
+/// [3]=HID projection enable (optional, backward-compatible — the SDK writes
+/// 0 on app takeover / 1 on release, approved 2026-07-07).
+fn log_config_write(data: &[u8]) {
+    let sensitivity = data.first().copied();
+    let raw_opt_in = data.get(1).map(|b| *b != 0);
+    let gesture_mask = data.get(2).copied();
+    let hid_enabled = data.get(3).map(|b| *b != 0);
+    tracing::info!(
+        "⚙️ Config write: sensitivity={:?} raw_stream={:?} gesture_mask={:?} hid={}",
+        sensitivity,
+        raw_opt_in,
+        gesture_mask,
+        match hid_enabled {
+            Some(true) => "ON (restored)",
+            Some(false) => "OFF (app takeover)",
+            None => "unchanged (byte 3 omitted)",
+        }
+    );
+}
+
+/// Extracts the command sequence from raw haptic-write bytes.
+/// Legacy (non-envelope) writes have no sequence; 0 = unsequenced.
+fn haptic_command_sequence(data: &[u8]) -> u64 {
+    serde_json::from_slice::<ProtocolEnvelope<SimulatorCommand>>(data)
+        .map(|envelope| envelope.sequence)
+        .unwrap_or(0)
+}
+
+/// Builds the v0.3.0 ack envelope for a haptic-command outcome. Acks ride the
+/// state-snapshot characteristic as full envelopes (projection decision —
+/// no dedicated characteristic in the frozen UUID table).
+fn build_haptic_ack_payload(sequence: u64, result: &Result<()>) -> Option<Vec<u8>> {
+    let ack = match result {
+        Ok(()) => AckPayload {
+            sequence,
+            status: AckStatus::Ok,
+            reason: None,
+        },
+        // The only failure path in handle_haptic_command_shared is the
+        // privileged-action gate, so failures are policy denials.
+        Err(error) => AckPayload {
+            sequence,
+            status: AckStatus::Denied,
+            reason: Some(error.to_string()),
+        },
+    };
+    let envelope = ProtocolEnvelope::event(
+        sequence,
+        crate::protocol::current_protocol_timestamp_ms(),
+        SimulatorEvent::Ack(ack),
+    );
+    serde_json::to_vec(&envelope).ok()
+}
+
 async fn handle_haptic_command_shared(
     data: Vec<u8>,
     safety_policy: &Arc<RwLock<TrustPolicy>>,
@@ -1565,8 +1792,10 @@ async fn process_haptic_command_shared(
     if let Some(haptic_tx) = haptic_tx {
         let haptic_event = HapticEvent {
             pattern: match command.pattern.as_str() {
-                "notify" => crate::emulator::HapticPattern::Notify,
-                "success" => crate::emulator::HapticPattern::Success,
+                // Ratified v0.2.0 names first; v0.1.0 legacy names accepted.
+                "confirm" | "success" => crate::emulator::HapticPattern::Success,
+                "tick" | "notify" => crate::emulator::HapticPattern::Notify,
+                "double_tick" => crate::emulator::HapticPattern::DoubleTick,
                 "error" => crate::emulator::HapticPattern::Error,
                 _ => crate::emulator::HapticPattern::Custom {
                     intensity: command.intensity,
@@ -1584,12 +1813,14 @@ async fn process_haptic_command_shared(
 async fn display_haptic_command_shared(command: &HapticCommand) {
     let intensity_bar = create_intensity_bar(command.intensity);
     let pattern_emoji = match command.pattern.as_str() {
-        "notify" => "🔔",
-        "success" => "✅",
+        "confirm" | "success" => "✅",
+        "tick" | "notify" => "🔔",
+        "double_tick" => "🔔🔔",
         "error" => "❌",
         "warning" => "⚠️",
         "pulse" => "💓",
         "buzz" => "📳",
+        "waveform" => "🌊",
         _ => "🎛️",
     };
 

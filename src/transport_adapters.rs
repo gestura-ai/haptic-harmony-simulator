@@ -118,6 +118,14 @@ impl BleProtocolAdapter {
                 characteristic_uuid: ring_uuids::STATE_SNAPSHOT_UUID,
                 payload: serde_json::to_vec(snapshot)?,
             }),
+            // Acks ride the state-snapshot characteristic as a full envelope
+            // (no dedicated characteristic in the frozen 6-entry UUID table).
+            // Hosts distinguish by attempting envelope parse first; snapshot
+            // parsers that don't know acks simply ignore the payload.
+            SimulatorEvent::Ack(_) => Ok(ProjectedBleFrame {
+                characteristic_uuid: ring_uuids::STATE_SNAPSHOT_UUID,
+                payload: serde_json::to_vec(event)?,
+            }),
         }
     }
 
@@ -184,6 +192,8 @@ fn legacy_gesture_label(gesture: &SemanticGesture) -> &'static str {
         SemanticGesture::Tap => "tap",
         SemanticGesture::DoubleTap => "double_tap",
         SemanticGesture::Hold { .. } => "hold",
+        SemanticGesture::Swipe { .. } => "swipe",
+        SemanticGesture::Rotate { .. } => "rotate",
         SemanticGesture::Slide { .. } => "slide",
         SemanticGesture::Tilt { .. } => "tilt",
     }

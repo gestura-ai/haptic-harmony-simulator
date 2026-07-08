@@ -91,7 +91,12 @@ pub struct TrustPolicy {
 impl Default for TrustPolicy {
     fn default() -> Self {
         Self {
-            trust_state: TrustState::Enrolled,
+            // Deny-by-default posture (user decision 2026-07-02: "align to
+            // deny"). A device starts merely Discovered; privileged actions
+            // (haptic/protocol commands) require an explicit transition to
+            // Enrolled or better, matching the ring firmware, which rejects
+            // unbonded writers.
+            trust_state: TrustState::Discovered,
             degraded_modes: Vec::new(),
             firmware_compatible: true,
             revocation_reason: None,

@@ -257,6 +257,9 @@ impl FeedbackLoop {
             crate::emulator::HapticPattern::Error => {
                 println!("📳 Vibrate: error pattern");
             }
+            crate::emulator::HapticPattern::DoubleTick => {
+                println!("📳 Vibrate: double-tick pattern");
+            }
         }
         Ok(())
     }

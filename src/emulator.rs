@@ -43,6 +43,9 @@ pub enum HapticPattern {
     Success,
     /// Error feedback pattern
     Error,
+    /// Two short ticks (ratified vocabulary `double_tick`; feel values are
+    /// placeholders pending cross-lane tuning on hardware)
+    DoubleTick,
 }
 
 /// Gesture event with timing information

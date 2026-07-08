@@ -244,7 +244,7 @@ async fn test_ble_gesture_data_embeds_protocol_event() {
 #[tokio::test]
 async fn test_haptic_command_protocol_round_trip() {
     let command = HapticCommand {
-        pattern: "notify".to_string(),
+        pattern: "tick".to_string(),
         intensity: 0.8,
         duration_ms: 300,
     };
@@ -254,9 +254,27 @@ async fn test_haptic_command_protocol_round_trip() {
     let decoded =
         HapticCommand::try_from_protocol_bytes(&encoded).expect("protocol decoding should succeed");
 
-    assert_eq!(decoded.pattern, "notify");
-    assert_eq!(decoded.duration_ms, 200);
+    assert_eq!(decoded.pattern, "tick");
+    assert_eq!(decoded.duration_ms, 100);
     assert_eq!(decoded.intensity, 1.0);
+}
+
+#[tokio::test]
+async fn test_haptic_command_v0_1_legacy_names_map_to_ratified_vocabulary() {
+    // v0.1.0 peers may still say "notify"/"success"; they must round-trip
+    // into the ratified v0.2.0 vocabulary (notify→tick, success→confirm).
+    let command = HapticCommand {
+        pattern: "notify".to_string(),
+        intensity: 0.8,
+        duration_ms: 300,
+    };
+
+    let encoded = serde_json::to_vec(&command.to_protocol_envelope(12))
+        .expect("protocol encoding should succeed");
+    let decoded =
+        HapticCommand::try_from_protocol_bytes(&encoded).expect("protocol decoding should succeed");
+
+    assert_eq!(decoded.pattern, "tick");
 }
 
 #[tokio::test]
@@ -339,6 +357,102 @@ async fn test_adapter_hub_projects_same_event_across_ble_socket_and_mcp() {
 }
 
 #[tokio::test]
+async fn test_config_read_is_trust_gated_and_round_trips() {
+    // Readable-C2 (ratified 2026-07-08): reads are trust-gated like writes,
+    // return the seeded defaults, and reflect subsequent writes so hosts can
+    // read-modify-write instead of clobbering config. (Simulator gates at
+    // Enrolled — reference-stricter than the bonded device guarantee.)
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+
+    peripheral
+        .read_characteristic(ring_uuids::CONFIG_UUID)
+        .await
+        .expect_err("default (Discovered) trust must deny config reads");
+    peripheral
+        .write_characteristic(ring_uuids::CONFIG_UUID, vec![0x01, 0x01, 0x01, 0x01])
+        .await
+        .expect_err("default (Discovered) trust must deny config writes");
+
+    peripheral
+        .transition_trust_state(TrustState::Enrolled)
+        .await
+        .expect("trust state transition should succeed");
+
+    // The denied write must NOT have persisted — first read returns defaults.
+    let defaults = peripheral
+        .read_characteristic(ring_uuids::CONFIG_UUID)
+        .await
+        .expect("enrolled device must allow config reads");
+    assert_eq!(defaults, vec![0x80, 0x00, 0xFF, 0x01]);
+
+    peripheral
+        .write_characteristic(ring_uuids::CONFIG_UUID, vec![0x2A, 0x01, 0x0F, 0x00])
+        .await
+        .expect("enrolled device must allow config writes");
+    let read_back = peripheral
+        .read_characteristic(ring_uuids::CONFIG_UUID)
+        .await
+        .expect("config read after write should succeed");
+    assert_eq!(read_back, vec![0x2A, 0x01, 0x0F, 0x00]);
+}
+
+#[tokio::test]
+async fn test_raw_sensor_stream_subscription_is_trust_gated() {
+    // C3 raw sensor stream (approved 2026-07-02): privacy-sensitive, so
+    // subscription requires Bonded trust or better — denied at the default
+    // Discovered state, allowed once bonded.
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+
+    let error = peripheral
+        .subscribe_characteristic(
+            ring_uuids::RAW_SENSOR_STREAM_UUID,
+            "client-a".to_string(),
+        )
+        .await
+        .expect_err("default (Discovered) trust must deny raw-stream subscription");
+    assert!(
+        error
+            .to_string()
+            .contains("device must be bonded before sensitive diagnostics are exposed")
+    );
+
+    peripheral
+        .transition_trust_state(TrustState::Bonded)
+        .await
+        .expect("trust state transition should succeed");
+
+    peripheral
+        .subscribe_characteristic(
+            ring_uuids::RAW_SENSOR_STREAM_UUID,
+            "client-a".to_string(),
+        )
+        .await
+        .expect("bonded device may subscribe to the raw sensor stream");
+}
+
+#[tokio::test]
+async fn test_ble_peripheral_denies_haptics_by_default() {
+    // Deny-by-default posture (user decision 2026-07-02): a freshly created
+    // peripheral is merely Discovered and must refuse privileged commands
+    // without any explicit trust transition.
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+
+    let error = peripheral
+        .simulate_haptic_command("confirm", 1.0, 250)
+        .await
+        .expect_err("default trust state must deny privileged haptics");
+
+    assert!(
+        error
+            .to_string()
+            .contains("device is not enrolled for privileged command execution")
+    );
+}
+
+#[tokio::test]
 async fn test_ble_peripheral_denies_haptics_when_trust_is_not_enrolled() {
     let peripheral =
         BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
@@ -364,6 +478,13 @@ async fn test_ble_peripheral_denies_haptics_when_trust_is_not_enrolled() {
 async fn test_ble_peripheral_denies_haptics_when_low_battery_degraded() {
     let peripheral =
         BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+
+    // Trust now defaults to deny (Discovered); enroll explicitly so this test
+    // exercises the low-battery gate rather than the trust gate.
+    peripheral
+        .transition_trust_state(TrustState::Enrolled)
+        .await
+        .expect("trust state transition should succeed");
 
     peripheral
         .set_battery_level(5)
