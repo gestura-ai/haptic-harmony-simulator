@@ -406,10 +406,7 @@ async fn test_raw_sensor_stream_subscription_is_trust_gated() {
         BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
 
     let error = peripheral
-        .subscribe_characteristic(
-            ring_uuids::RAW_SENSOR_STREAM_UUID,
-            "client-a".to_string(),
-        )
+        .subscribe_characteristic(ring_uuids::RAW_SENSOR_STREAM_UUID, "client-a".to_string())
         .await
         .expect_err("default (Discovered) trust must deny raw-stream subscription");
     assert!(
@@ -424,10 +421,7 @@ async fn test_raw_sensor_stream_subscription_is_trust_gated() {
         .expect("trust state transition should succeed");
 
     peripheral
-        .subscribe_characteristic(
-            ring_uuids::RAW_SENSOR_STREAM_UUID,
-            "client-a".to_string(),
-        )
+        .subscribe_characteristic(ring_uuids::RAW_SENSOR_STREAM_UUID, "client-a".to_string())
         .await
         .expect("bonded device may subscribe to the raw sensor stream");
 }
