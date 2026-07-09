@@ -395,6 +395,20 @@ async fn test_config_read_is_trust_gated_and_round_trips() {
         .await
         .expect("config read after write should succeed");
     assert_eq!(read_back, vec![0x2A, 0x01, 0x0F, 0x00]);
+
+    // Partial-update semantics (2026-07-07 firmware note): a shorter write
+    // leaves trailing bytes unchanged, so omitting byte 3 (HID) must not
+    // drop the stored HID state (0x00 from the write above) that a
+    // readable-C2 read would later expose.
+    peripheral
+        .write_characteristic(ring_uuids::CONFIG_UUID, vec![0x55, 0x00, 0xF0])
+        .await
+        .expect("enrolled device must allow partial config writes");
+    let read_back = peripheral
+        .read_characteristic(ring_uuids::CONFIG_UUID)
+        .await
+        .expect("config read after partial write should succeed");
+    assert_eq!(read_back, vec![0x55, 0x00, 0xF0, 0x00]);
 }
 
 #[tokio::test]

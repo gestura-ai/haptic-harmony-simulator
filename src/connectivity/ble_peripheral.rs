@@ -988,7 +988,7 @@ impl BlePeripheral {
             if characteristic.properties.write {
                 {
                     let mut value = characteristic.value.write().await;
-                    *value = data.clone();
+                    store_characteristic_write(&mut value, uuid, &data);
                 }
                 tracing::info!("✍️ BLE Write characteristic {}: {} bytes", uuid, data.len());
 
@@ -1013,7 +1013,7 @@ impl BlePeripheral {
                         {
                             tracing::debug!("Failed to notify command ack: {notify_error}");
                         }
-                        result?;
+                        result.map(|_| ())?;
                     }
                     ring_uuids::OTA_UPDATE_UUID => {
                         handle_ota_update_shared(data).await?;
@@ -1235,7 +1235,7 @@ impl BlePeripheral {
         {
             tracing::debug!("Failed to notify command ack: {notify_error}");
         }
-        result
+        result.map(|_| ())
     }
 
     /// Ensure a privileged action is allowed under the current trust policy.
@@ -1417,7 +1417,7 @@ impl BlePeripheralTask {
 
         {
             let mut value = characteristic.value.write().await;
-            *value = data.clone();
+            store_characteristic_write(&mut value, uuid, &data);
         }
 
         drop(characteristics);
@@ -1439,7 +1439,7 @@ impl BlePeripheralTask {
                 {
                     tracing::debug!("Failed to notify command ack: {notify_error}");
                 }
-                result?;
+                result.map(|_| ())?;
             }
             ring_uuids::OTA_UPDATE_UUID => {
                 handle_ota_update_shared(data).await?;
@@ -1704,6 +1704,20 @@ fn log_config_write(data: &[u8]) {
     );
 }
 
+/// Stores a characteristic write into the retained value. Config (C2) writes
+/// use partial-update semantics — the contract treats shorter writes as
+/// leaving trailing fields unchanged (2026-07-07 firmware note), so a write
+/// that omits byte 3 (HID) must not drop the stored HID state that a
+/// readable-C2 read would later expose. All other characteristics replace
+/// their value wholesale.
+fn store_characteristic_write(value: &mut Vec<u8>, uuid: &str, data: &[u8]) {
+    if uuid == ring_uuids::CONFIG_UUID && data.len() < value.len() {
+        value[..data.len()].copy_from_slice(data);
+    } else {
+        *value = data.to_vec();
+    }
+}
+
 /// Extracts the command sequence from raw haptic-write bytes.
 /// Legacy (non-envelope) writes have no sequence; 0 = unsequenced.
 fn haptic_command_sequence(data: &[u8]) -> u64 {
@@ -1712,18 +1726,34 @@ fn haptic_command_sequence(data: &[u8]) -> u64 {
         .unwrap_or(0)
 }
 
+/// Outcome of a haptic-command write: distinguishes commands that actually
+/// executed from payloads that never decoded into a command (the raw-data
+/// fallback), so acks don't report `Ok` for writes that did nothing.
+enum HapticCommandOutcome {
+    Executed,
+    Unparsed,
+}
+
 /// Builds the v0.3.0 ack envelope for a haptic-command outcome. Acks ride the
 /// state-snapshot characteristic as full envelopes (projection decision —
 /// no dedicated characteristic in the frozen UUID table).
-fn build_haptic_ack_payload(sequence: u64, result: &Result<()>) -> Option<Vec<u8>> {
+fn build_haptic_ack_payload(
+    sequence: u64,
+    result: &Result<HapticCommandOutcome>,
+) -> Option<Vec<u8>> {
     let ack = match result {
-        Ok(()) => AckPayload {
+        Ok(HapticCommandOutcome::Executed) => AckPayload {
             sequence,
             status: AckStatus::Ok,
             reason: None,
         },
-        // The only failure path in handle_haptic_command_shared is the
-        // privileged-action gate, so failures are policy denials.
+        Ok(HapticCommandOutcome::Unparsed) => AckPayload {
+            sequence,
+            status: AckStatus::Error,
+            reason: Some("payload did not decode as a haptic command".to_string()),
+        },
+        // The only Err path in handle_haptic_command_shared is the
+        // privileged-action gate, so errors are policy denials.
         Err(error) => AckPayload {
             sequence,
             status: AckStatus::Denied,
@@ -1743,13 +1773,13 @@ async fn handle_haptic_command_shared(
     safety_policy: &Arc<RwLock<TrustPolicy>>,
     haptic_tx: Option<&mpsc::UnboundedSender<HapticEvent>>,
     event_tx: &broadcast::Sender<BlePeripheralEvent>,
-) -> Result<()> {
+) -> Result<HapticCommandOutcome> {
     if let Ok(command) = HapticCommand::try_from_protocol_bytes(&data) {
         ensure_privileged_action_allowed_shared(safety_policy, PrivilegedAction::HapticCommand)
             .await?;
         let _ = event_tx.send(BlePeripheralEvent::HapticCommandReceived(command.clone()));
         process_haptic_command_shared(command, haptic_tx).await?;
-        return Ok(());
+        return Ok(HapticCommandOutcome::Executed);
     }
 
     if let Ok(command_str) = String::from_utf8(data.clone())
@@ -1759,12 +1789,12 @@ async fn handle_haptic_command_shared(
             .await?;
         let _ = event_tx.send(BlePeripheralEvent::HapticCommandReceived(command.clone()));
         process_haptic_command_shared(command, haptic_tx).await?;
-        return Ok(());
+        return Ok(HapticCommandOutcome::Executed);
     }
 
     tracing::info!("📳 Raw Haptic Data Received: {} bytes", data.len());
     display_raw_haptic_data_shared(&data).await;
-    Ok(())
+    Ok(HapticCommandOutcome::Unparsed)
 }
 
 async fn ensure_privileged_action_allowed_shared(
@@ -1908,6 +1938,24 @@ async fn handle_ota_update_shared(data: Vec<u8>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unparsed_haptic_payload_acks_error_not_ok() {
+        // A write that never decoded into a command must not be acked Ok —
+        // hosts would believe an unexecuted command succeeded.
+        let payload = build_haptic_ack_payload(7, &Ok(HapticCommandOutcome::Unparsed))
+            .expect("ack payload should serialize");
+        let envelope: ProtocolEnvelope<SimulatorEvent> =
+            serde_json::from_slice(&payload).expect("ack envelope should parse");
+        match envelope.payload {
+            SimulatorEvent::Ack(ack) => {
+                assert_eq!(ack.sequence, 7);
+                assert_eq!(ack.status, AckStatus::Error);
+                assert!(ack.reason.is_some());
+            }
+            other => panic!("expected ack event, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn notify_characteristic_delivers_to_live_notifiers() {

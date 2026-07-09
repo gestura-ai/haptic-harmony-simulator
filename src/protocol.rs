@@ -249,9 +249,10 @@ impl SemanticGestureEvent {
 /// {Confirm, Error, Tick, DoubleTick, Waveform} (user decision 2026-07-02).
 ///
 /// `success`/`notify` are accepted as read-aliases for v0.1.0 peers but never
-/// emitted. `Waveform` travels as the interim `Custom` variant until its
-/// first-class payload encoding is ratified (pending firmware cross-check +
-/// user confirmation).
+/// emitted. `Waveform` is first-class as of v0.3.0: base64-encoded 12-bit
+/// two's-complement samples sent as int16 (BOS1921 datasheet pass,
+/// 2026-07-07); firmware rejects >1024 samples (device FIFO) until streaming
+/// refill lands, protocol-level cap 4 KiB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "pattern_kind", rename_all = "snake_case")]
 pub enum SemanticHapticPattern {
@@ -445,7 +446,9 @@ pub enum SimulatorEvent {
     Battery(BatterySnapshot),
     /// Full device-state snapshot.
     StateSnapshot(DeviceStateSnapshot),
-    /// Command acknowledgement (v0.3.0; emission wiring is a follow-up).
+    /// Command acknowledgement (v0.3.0). Emitted for haptic-command writes:
+    /// acks ride the state-snapshot characteristic (C1) as full envelopes —
+    /// `Ok` (executed), `Denied` (trust gate), or `Error` (unparsed payload).
     Ack(AckPayload),
 }
 
