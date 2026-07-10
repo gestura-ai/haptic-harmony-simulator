@@ -70,7 +70,12 @@ fn golden_vectors_match_firmware() {
     for scenario_path in scenario_paths {
         let expected_path = scenario_path.with_extension("expected");
         let scenario = std::fs::read_to_string(&scenario_path).expect("read scenario");
-        let expected = std::fs::read_to_string(&expected_path).expect("read expected");
+        // Windows checkouts may materialize the vectors with CRLF (git
+        // autocrlf); the core always emits LF. Normalize before comparing —
+        // line endings are checkout artifacts, not contract bytes.
+        let expected = std::fs::read_to_string(&expected_path)
+            .expect("read expected")
+            .replace("\r\n", "\n");
 
         let actual = core
             .replay_scenario(&scenario)
