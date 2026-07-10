@@ -71,4 +71,10 @@ fn build_device_core() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR set by cargo");
     println!("cargo:rustc-link-search=native={out_dir}");
     println!("cargo:rustc-link-lib=static:+whole-archive=gestura_device_core");
+    // rustc-link-lib from a build script attaches to the LIB target only.
+    // The bin compiles its own copy of the device_core module (main.rs
+    // `mod device_core`), and its gdc_* references never see the archive:
+    // the bin links only while that copy is dead code (default features)
+    // and fails under cli-only. Feed bin targets the archive directly.
+    println!("cargo:rustc-link-arg-bins={out_dir}/libgestura_device_core.a");
 }
