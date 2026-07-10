@@ -11,7 +11,15 @@ use crate::emulator::{GestureEvent, GestureType, HapticPattern, SlideDirection};
 use crate::trust::{DegradedMode, TrustState};
 
 /// The current shared simulator protocol version.
-pub const SHARED_PROTOCOL_VERSION: &str = "0.1.0";
+///
+/// v0.2.0 (2026-07-02): haptic vocabulary ratified as {Confirm, Error, Tick,
+/// DoubleTick, Waveform} per user decision. NOTE: per the same decision, the
+/// canonical home of this contract is now the gestura-app SDK
+/// (`gestura-core-ring/src/protocol.rs`) — this file follows it.
+///
+/// v0.3.0 (2026-07-02, all proposals approved): new GATT UUID base,
+/// first-class waveform payload, swipe/rotate gesture kinds, ack event type.
+pub const SHARED_PROTOCOL_VERSION: &str = "0.3.0";
 
 /// Returns the current wall-clock timestamp in milliseconds.
 pub fn current_protocol_timestamp_ms() -> u64 {
@@ -107,7 +115,30 @@ impl From<&SlideDirection> for SemanticSlideDirection {
     }
 }
 
+/// Horizontal swipe directions (device touch strip is single-axis).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticSwipeDirection {
+    /// Leftward swipe.
+    Left,
+    /// Rightward swipe.
+    Right,
+}
+
+/// Rotation directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticRotateDirection {
+    /// Clockwise.
+    Cw,
+    /// Counter-clockwise.
+    Ccw,
+}
+
 /// Semantic gesture kind shared across adapters.
+///
+/// v0.3.0: `swipe`/`rotate` are device-truth kinds; `slide`/`tilt` remain
+/// simulator-only (produced by the pad/tilt UI, no ring equivalent).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "gesture_kind", rename_all = "snake_case")]
 pub enum SemanticGesture {
@@ -117,9 +148,13 @@ pub enum SemanticGesture {
     DoubleTap,
     /// Hold with duration.
     Hold { duration_ms: u64 },
-    /// Slide with direction.
+    /// Horizontal swipe (device-truth kind).
+    Swipe { direction: SemanticSwipeDirection },
+    /// Rotation (device-truth kind).
+    Rotate { direction: SemanticRotateDirection },
+    /// Slide with direction (simulator-only).
     Slide { direction: SemanticSlideDirection },
-    /// Tilt with angle.
+    /// Tilt with angle (simulator-only).
     Tilt { angle_degrees: f32 },
 }
 
@@ -210,26 +245,49 @@ impl SemanticGestureEvent {
     }
 }
 
-/// Semantic haptic pattern payload.
+/// Semantic haptic pattern payload — v0.2.0 ratified vocabulary
+/// {Confirm, Error, Tick, DoubleTick, Waveform} (user decision 2026-07-02).
+///
+/// `success`/`notify` are accepted as read-aliases for v0.1.0 peers but never
+/// emitted. `Waveform` is first-class as of v0.3.0: base64-encoded 12-bit
+/// two's-complement samples sent as int16 (BOS1921 datasheet pass,
+/// 2026-07-07); firmware rejects >1024 samples (device FIFO) until streaming
+/// refill lands, protocol-level cap 4 KiB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "pattern_kind", rename_all = "snake_case")]
 pub enum SemanticHapticPattern {
-    /// Notification haptic.
-    Notify,
-    /// Success haptic.
-    Success,
+    /// Confirmation haptic.
+    #[serde(alias = "success")]
+    Confirm,
     /// Error haptic.
     Error,
-    /// Custom haptic.
+    /// Single tick haptic.
+    #[serde(alias = "notify")]
+    Tick,
+    /// Double tick haptic.
+    DoubleTick,
+    /// First-class waveform playback (v0.3.0): base64 samples + sample rate.
+    Waveform {
+        /// Base64-encoded samples.
+        data: String,
+        /// Sample rate of `data`.
+        sample_rate_hz: u32,
+        /// Playback intensity.
+        intensity: f32,
+    },
+    /// Custom haptic (generic pulse).
     Custom { intensity: f32, duration_ms: u64 },
 }
 
 impl From<&HapticPattern> for SemanticHapticPattern {
     fn from(value: &HapticPattern) -> Self {
         match value {
-            HapticPattern::Notify => Self::Notify,
-            HapticPattern::Success => Self::Success,
+            // The emulator's internal preset names predate the ratified
+            // vocabulary; map them onto it at the protocol boundary.
+            HapticPattern::Notify => Self::Tick,
+            HapticPattern::Success => Self::Confirm,
             HapticPattern::Error => Self::Error,
+            HapticPattern::DoubleTick => Self::DoubleTick,
             HapticPattern::Custom {
                 intensity,
                 duration,
@@ -244,9 +302,20 @@ impl From<&HapticPattern> for SemanticHapticPattern {
 impl From<SemanticHapticPattern> for HapticPattern {
     fn from(value: SemanticHapticPattern) -> Self {
         match value {
-            SemanticHapticPattern::Notify => Self::Notify,
-            SemanticHapticPattern::Success => Self::Success,
+            SemanticHapticPattern::Confirm => Self::Success,
             SemanticHapticPattern::Error => Self::Error,
+            SemanticHapticPattern::Tick => Self::Notify,
+            SemanticHapticPattern::DoubleTick => Self::DoubleTick,
+            // The emulator cannot play raw samples; approximate the waveform
+            // with a pulse of its true playback duration.
+            SemanticHapticPattern::Waveform {
+                data,
+                sample_rate_hz,
+                intensity,
+            } => Self::Custom {
+                intensity,
+                duration: waveform_playback_duration(&data, sample_rate_hz),
+            },
             SemanticHapticPattern::Custom {
                 intensity,
                 duration_ms,
@@ -258,6 +327,20 @@ impl From<SemanticHapticPattern> for HapticPattern {
     }
 }
 
+/// Computes the playback duration of a base64-encoded sample buffer.
+/// Falls back to 100 ms when the payload doesn't decode or the rate is zero.
+pub fn waveform_playback_duration(data: &str, sample_rate_hz: u32) -> std::time::Duration {
+    use base64::Engine as _;
+    let sample_count = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map(|samples| samples.len() as u64)
+        .unwrap_or(0);
+    if sample_count == 0 || sample_rate_hz == 0 {
+        return std::time::Duration::from_millis(100);
+    }
+    std::time::Duration::from_millis(sample_count * 1000 / sample_rate_hz as u64)
+}
+
 /// Semantic haptic command payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HapticCommandPayload {
@@ -267,12 +350,14 @@ pub struct HapticCommandPayload {
 
 impl HapticCommandPayload {
     /// Builds a semantic haptic command from the legacy simulator fields.
+    /// Accepts both the v0.2.0 ratified names and the v0.1.0 legacy names.
     pub fn from_legacy_parts(pattern: &str, intensity: f32, duration_ms: u32) -> Self {
         let normalized = pattern.to_ascii_lowercase();
         let pattern = match normalized.as_str() {
-            "notify" => SemanticHapticPattern::Notify,
-            "success" => SemanticHapticPattern::Success,
+            "confirm" | "success" => SemanticHapticPattern::Confirm,
             "error" => SemanticHapticPattern::Error,
+            "tick" | "notify" => SemanticHapticPattern::Tick,
+            "double_tick" | "doubletick" => SemanticHapticPattern::DoubleTick,
             _ => SemanticHapticPattern::Custom {
                 intensity,
                 duration_ms: duration_ms as u64,
@@ -327,6 +412,30 @@ pub struct DeviceStateSnapshot {
     pub privileged_actions_enabled: bool,
 }
 
+/// Ack status for command acknowledgements (v0.3.0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AckStatus {
+    /// Command accepted and executed.
+    Ok,
+    /// Command refused by policy (e.g. trust gate).
+    Denied,
+    /// Command failed.
+    Error,
+}
+
+/// Command acknowledgement payload (v0.3.0). Correlates via the command
+/// envelope's `sequence`, making policy denials visible to the host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AckPayload {
+    /// Sequence of the command being acknowledged.
+    pub sequence: u64,
+    /// Outcome.
+    pub status: AckStatus,
+    /// Optional human-readable reason (set on denial/error).
+    pub reason: Option<String>,
+}
+
 /// Transport-agnostic simulator events.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event_kind", content = "event", rename_all = "snake_case")]
@@ -337,6 +446,10 @@ pub enum SimulatorEvent {
     Battery(BatterySnapshot),
     /// Full device-state snapshot.
     StateSnapshot(DeviceStateSnapshot),
+    /// Command acknowledgement (v0.3.0). Emitted for haptic-command writes:
+    /// acks ride the state-snapshot characteristic (C1) as full envelopes —
+    /// `Ok` (executed), `Denied` (trust gate), or `Error` (unparsed payload).
+    Ack(AckPayload),
 }
 
 /// Transport-agnostic simulator commands.

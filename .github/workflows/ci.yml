@@ -9,6 +9,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The device-core feature (default) compiles the ring firmware's actual
+  # sources — every job building with default features needs this checkout.
+  GESTURA_FIRMWARE_DIR: ${{ github.workspace }}/haptic-basic-firmware
 
 jobs:
   test:
@@ -28,6 +31,15 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Checkout firmware (device-core sources + conformance vectors)
+      uses: actions/checkout@v4
+      with:
+        repository: gestura-ai/haptic-basic-firmware
+        path: haptic-basic-firmware
+        # For a private firmware repo, add a FIRMWARE_REPO_TOKEN secret
+        # (fine-grained PAT with read access); falls back to the job token.
+        token: ${{ secrets.FIRMWARE_REPO_TOKEN != '' && secrets.FIRMWARE_REPO_TOKEN || github.token }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
@@ -180,6 +192,40 @@ jobs:
           exit 1
         fi
 
+  conformance:
+    name: Firmware Conformance (golden vectors)
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Checkout firmware
+      uses: actions/checkout@v4
+      with:
+        repository: gestura-ai/haptic-basic-firmware
+        path: haptic-basic-firmware
+        token: ${{ secrets.FIRMWARE_REPO_TOKEN != '' && secrets.FIRMWARE_REPO_TOKEN || github.token }}
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update --fix-missing
+        sudo apt-get install -y --no-install-recommends \
+          build-essential libdbus-1-dev libudev-dev pkg-config python3
+
+    # 1. The firmware's own replay: C generator vs checked-in goldens.
+    - name: Run firmware conformance suite
+      run: |
+        chmod +x haptic-basic-firmware/conformance/run_conformance.sh
+        haptic-basic-firmware/conformance/run_conformance.sh
+
+    # 2. The embedded core: same goldens replayed through the simulator's
+    #    FFI layer — parity between sim and ring enforced, not assumed.
+    - name: Replay goldens through the embedded device core
+      run: cargo test --test device_core_conformance --no-default-features --features device-core -- --nocapture
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -202,6 +248,13 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Checkout firmware (device-core sources)
+      uses: actions/checkout@v4
+      with:
+        repository: gestura-ai/haptic-basic-firmware
+        path: haptic-basic-firmware
+        token: ${{ secrets.FIRMWARE_REPO_TOKEN != '' && secrets.FIRMWARE_REPO_TOKEN || github.token }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -261,6 +314,13 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Checkout firmware (device-core sources)
+      uses: actions/checkout@v4
+      with:
+        repository: gestura-ai/haptic-basic-firmware
+        path: haptic-basic-firmware
+        token: ${{ secrets.FIRMWARE_REPO_TOKEN != '' && secrets.FIRMWARE_REPO_TOKEN || github.token }}
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable

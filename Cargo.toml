@@ -39,7 +39,13 @@ rand = "0.8.5"
 ble-peripheral-rust = { version = "0.2.0", optional = true }
 
 [features]
-default = []
+# device-core embeds the ring firmware's ACTUAL gesture-engine/codec sources
+# via FFI (see build.rs + firmware repo device_core/README.md). Default ON;
+# requires the haptic-basic-firmware checkout (GESTURA_FIRMWARE_DIR or the
+# sibling ../haptic-basic-firmware). `--no-default-features` falls back to
+# the legacy behavioral emulation.
+default = ["device-core"]
+device-core = []
 native-ble = ["dep:ble-peripheral-rust"]
 linux-ble = ["native-ble"]
 tauri-gui = ["tauri", "tauri-plugin-shell"]
@@ -48,3 +54,4 @@ cli-only = []
 # Tauri build configuration
 [build-dependencies]
 tauri-build = { version = "2.0.0-beta", features = [] }
+cc = "1"

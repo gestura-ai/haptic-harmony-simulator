@@ -4,6 +4,11 @@
 //! for developer testing and solution creation.
 
 mod connectivity;
+// The bin compiles its own module tree; it uses a subset of the device-core
+// API (the lib exports all of it), so silence dead-code for this copy only.
+#[cfg(feature = "device-core")]
+#[allow(dead_code)]
+mod device_core;
 mod emulator;
 mod feedback;
 mod mcp_mock;
