@@ -33,6 +33,10 @@
 //! ```
 
 pub mod connectivity;
+/// The ring firmware's actual gesture-engine/codec sources, embedded via FFI
+/// (feature `device-core`, default on — see build.rs).
+#[cfg(feature = "device-core")]
+pub mod device_core;
 pub mod emulator;
 pub mod feedback;
 pub mod mcp_mock;

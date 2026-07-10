@@ -357,6 +357,107 @@ async fn test_adapter_hub_projects_same_event_across_ble_socket_and_mcp() {
 }
 
 #[tokio::test]
+async fn test_single_connection_second_central_rejected() {
+    // Fidelity item 8: BT_MAX_CONN=1 parity — a second central is refused
+    // while one is connected.
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("peripheral should init");
+    peripheral
+        .simulate_client_connection()
+        .await
+        .expect("first central connects");
+    let error = peripheral
+        .simulate_client_connection()
+        .await
+        .expect_err("second central must be rejected (single-connection)");
+    assert!(error.to_string().contains("single-connection"));
+}
+
+#[tokio::test]
+async fn test_trust_resets_to_discovered_on_disconnect() {
+    // Fidelity item 8: firmware drops trust to UNTRUSTED on every disconnect.
+    let mut peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("peripheral should init");
+    peripheral
+        .simulate_client_connection()
+        .await
+        .expect("central connects");
+    peripheral
+        .transition_trust_state(TrustState::Enrolled)
+        .await
+        .expect("trust transition");
+
+    peripheral
+        .stop_advertising()
+        .await
+        .expect("stop advertising drops the link");
+
+    assert_eq!(
+        peripheral.get_safety_policy().await.trust_state,
+        TrustState::Discovered,
+        "trust must reset to discovered when the link drops"
+    );
+}
+
+#[tokio::test]
+async fn test_strict_transport_mtu_gate_and_long_write_assembly() {
+    // Fidelity item 7 (2026-07-08 review): with strict transport on and an
+    // un-negotiated MTU (23), direct writes above MTU-3 are rejected like
+    // real hardware — the GATT prepared-write (long write) path must be used.
+    let peripheral =
+        BlePeripheral::new(ConnectionConfig::default()).expect("BLE peripheral should initialize");
+    peripheral
+        .transition_trust_state(TrustState::Enrolled)
+        .await
+        .expect("trust state transition should succeed");
+    peripheral.set_strict_transport(true).await;
+
+    // A real haptic command envelope is far larger than 20 B.
+    let command = serde_json::to_vec(&ProtocolEnvelope::command_now(
+        5,
+        SimulatorCommand::Haptic(HapticCommandPayload {
+            pattern: SemanticHapticPattern::Tick,
+        }),
+    ))
+    .expect("serialize haptic envelope");
+    assert!(command.len() > 20);
+
+    let error = peripheral
+        .write_characteristic(ring_uuids::HAPTIC_COMMAND_UUID, command.clone())
+        .await
+        .expect_err("oversized direct write must be rejected in strict mode");
+    assert!(error.to_string().contains("exceeds ATT payload"));
+
+    // Assemble it as a long write: contiguous chunks within MTU-5.
+    let mut offset = 0;
+    for chunk in command.chunks(18) {
+        peripheral
+            .prepare_write(ring_uuids::HAPTIC_COMMAND_UUID, offset, chunk)
+            .await
+            .expect("contiguous prepared write should queue");
+        offset += chunk.len();
+    }
+    peripheral
+        .execute_write(ring_uuids::HAPTIC_COMMAND_UUID)
+        .await
+        .expect("assembled long write should decode and execute");
+
+    // Non-contiguous offsets are rejected and clear the queue, like ATT.
+    peripheral
+        .prepare_write(ring_uuids::HAPTIC_COMMAND_UUID, 7, b"x")
+        .await
+        .expect_err("non-contiguous prepared write must be rejected");
+
+    // After negotiating a firmware-sized MTU, direct writes fit again.
+    let mtu = peripheral.negotiate_mtu(498).await;
+    assert_eq!(mtu, 498);
+    peripheral
+        .write_characteristic(ring_uuids::HAPTIC_COMMAND_UUID, command)
+        .await
+        .expect("write fits after MTU negotiation");
+}
+
+#[tokio::test]
 async fn test_config_read_is_trust_gated_and_round_trips() {
     // Readable-C2 (ratified 2026-07-08): reads are trust-gated like writes,
     // return the seeded defaults, and reflect subsequent writes so hosts can

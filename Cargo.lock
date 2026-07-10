@@ -1657,6 +1657,7 @@ dependencies = [
  "base64 0.22.1",
  "ble-peripheral-rust",
  "btleplug",
+ "cc",
  "chrono",
  "clap",
  "crossterm",

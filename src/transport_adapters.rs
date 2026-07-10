@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::connectivity::ble_peripheral::{BleBatteryData, BleGestureData, ring_uuids};
+use crate::connectivity::ble_peripheral::{BleGestureData, ring_uuids};
 use crate::connectivity::socket_client::GesturaMessage;
 use crate::mcp_mock::{McpMessage, NotificationPriority};
 use crate::protocol::{ProtocolEnvelope, SemanticGesture, SimulatorCommand, SimulatorEvent};
@@ -99,24 +99,20 @@ impl BleProtocolAdapter {
                     payload: serde_json::to_vec(&ble_gesture)?,
                 })
             }
-            SimulatorEvent::Battery(snapshot) => {
-                let ble_battery = BleBatteryData {
-                    level: snapshot.level_percent,
-                    is_charging: snapshot.is_charging,
-                    voltage: snapshot.voltage,
-                    temperature: snapshot.temperature_celsius,
-                    health: snapshot.health.clone(),
-                    time_remaining: snapshot.time_remaining_minutes,
-                };
-
-                Ok(ProjectedBleFrame {
-                    characteristic_uuid: ring_uuids::BATTERY_LEVEL_UUID,
-                    payload: serde_json::to_vec(&ble_battery)?,
-                })
-            }
-            SimulatorEvent::StateSnapshot(snapshot) => Ok(ProjectedBleFrame {
+            // Behavioral mirror (fidelity item 2, 2026-07-09): the REAL
+            // ring's battery characteristic carries a single raw percent
+            // byte — rich battery data (voltage, temperature, health) rides
+            // the state snapshot instead. Hosts already accept both forms.
+            SimulatorEvent::Battery(snapshot) => Ok(ProjectedBleFrame {
+                characteristic_uuid: ring_uuids::BATTERY_LEVEL_UUID,
+                payload: vec![snapshot.level_percent],
+            }),
+            // Full envelope on the wire — matches the firmware's snapshot
+            // emitter (golden vectors, 2026-07-08). Was bare snapshot JSON;
+            // hosts parse enveloped-first with a bare fallback.
+            SimulatorEvent::StateSnapshot(_) => Ok(ProjectedBleFrame {
                 characteristic_uuid: ring_uuids::STATE_SNAPSHOT_UUID,
-                payload: serde_json::to_vec(snapshot)?,
+                payload: serde_json::to_vec(event)?,
             }),
             // Acks ride the state-snapshot characteristic as a full envelope
             // (no dedicated characteristic in the frozen 6-entry UUID table).
