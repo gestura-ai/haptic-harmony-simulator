@@ -25,7 +25,7 @@ We use GitHub to host code, to track issues and feature requests, as well as acc
 
 ### Prerequisites
 
-- **Rust 1.70+** - [Install Rust](https://rustup.rs/)
+- **Rust 1.85+** (edition 2024) - [Install Rust](https://rustup.rs/)
 - **Node.js 18+** - For Tauri frontend development
 - **Git** - Version control
 
@@ -122,7 +122,7 @@ docs(readme): update installation instructions
 
 ## 🐛 Bug Reports
 
-We use GitHub issues to track public bugs. Report a bug by [opening a new issue](https://github.com/haptic-harmony/haptic-harmony-simulation/issues).
+We use GitHub issues to track public bugs. Report a bug by [opening a new issue](https://github.com/gestura-ai/haptic-harmony-simulator/issues).
 
 **Great Bug Reports** tend to have:
 

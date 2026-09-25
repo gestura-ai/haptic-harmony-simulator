@@ -8,7 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `rotate` gesture (device-truth kind, protocol v0.3.0): new `GestureType::Rotate { direction }` in the emulator model, projected to `SemanticGesture::Rotate` on the wire and driven through the firmware engine (`UiGesture::RotateCw/Ccw`) under `device-core`. Reachable from the CLI (`↑`/`r`, `↓`/`R`), the Tauri `trigger_gesture` command (`rotate-cw`, `rotate-ccw`) and the web UI (buttons + arrow keys). Before this, no user input could produce a rotate.
+- Directional swipes from every input: the CLI `s` key now cycles Up → Right → Down → Left, `←`/`→` emit the horizontal slides that ARE the device-truth swipes, and `trigger_gesture` accepts `slide-up|down|left|right` / `swipe-left|right`. Before this, every input path hard-coded `SlideDirection::Up`.
+- Legacy-parts parser accepts `swipe` and `rotate`.
 - Initial project structure and documentation
+
+### Fixed
+- Build truth for outsiders: the README documents that the default `device-core` feature compiles the (private) `haptic-basic-firmware` sources and how to point `GESTURA_FIRMWARE_DIR` at a checkout or build with `--no-default-features --features cli-only`; the Dockerfile builds that way on a Rust image new enough for edition 2024 (`rust:1.75-slim` could not build this crate at all).
+- README/manifest: license badge and section say GPSL-1.1 (relicensed 2026-07-10, badge still said BSD-3-Clause); clone/issue URLs and `Cargo.toml#repository` point at `gestura-ai/haptic-harmony-simulator` instead of a non-existent repository; Rust requirement is 1.85+ (`rust-version` added), not 1.70+.
 
 ## [0.1.0] - 2024-08-11
 

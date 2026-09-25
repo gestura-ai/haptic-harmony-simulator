@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::emulator::{GestureEvent, GestureType, HapticPattern, SlideDirection};
+use crate::emulator::{GestureEvent, GestureType, HapticPattern, RotateDirection, SlideDirection};
 use crate::trust::{DegradedMode, TrustState};
 
 /// The current shared simulator protocol version.
@@ -172,6 +172,12 @@ impl From<&GestureType> for SemanticGesture {
             GestureType::Tilt { angle } => Self::Tilt {
                 angle_degrees: *angle,
             },
+            GestureType::Rotate { direction } => Self::Rotate {
+                direction: match direction {
+                    RotateDirection::Cw => SemanticRotateDirection::Cw,
+                    RotateDirection::Ccw => SemanticRotateDirection::Ccw,
+                },
+            },
         }
     }
 }
@@ -231,6 +237,36 @@ impl SemanticGestureEvent {
             "tilt" => SemanticGesture::Tilt {
                 angle_degrees: data.get("angle").and_then(Value::as_f64).unwrap_or(0.0) as f32,
             },
+            // Device-truth kinds: a missing direction is an error, never a
+            // guess (a malformed payload must not become a user gesture).
+            "swipe" => {
+                let direction = match data
+                    .get("direction")
+                    .and_then(Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("left") => SemanticSwipeDirection::Left,
+                    Some("right") => SemanticSwipeDirection::Right,
+                    Some(other) => return Err(anyhow!("unsupported swipe direction: {other}")),
+                    None => return Err(anyhow!("swipe gesture is missing its direction")),
+                };
+                SemanticGesture::Swipe { direction }
+            }
+            "rotate" => {
+                let direction = match data
+                    .get("direction")
+                    .and_then(Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("cw") => SemanticRotateDirection::Cw,
+                    Some("ccw") => SemanticRotateDirection::Ccw,
+                    Some(other) => return Err(anyhow!("unsupported rotate direction: {other}")),
+                    None => return Err(anyhow!("rotate gesture is missing its direction")),
+                };
+                SemanticGesture::Rotate { direction }
+            }
             other => return Err(anyhow!("unsupported legacy gesture type: {other}")),
         };
 

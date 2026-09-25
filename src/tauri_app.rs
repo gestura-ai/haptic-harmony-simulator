@@ -108,8 +108,25 @@ pub async fn trigger_gesture(gesture: String, state: State<'_, AppState>) -> Res
         "hold" => GestureType::Hold {
             duration: std::time::Duration::from_millis(1000),
         },
-        "slide" => GestureType::Slide {
+        "slide" | "slide-up" => GestureType::Slide {
             direction: crate::emulator::SlideDirection::Up,
+        },
+        "slide-down" => GestureType::Slide {
+            direction: crate::emulator::SlideDirection::Down,
+        },
+        // Horizontal slides ARE the device-truth swipes (the ring's touch
+        // strip is single-axis); accept both spellings.
+        "slide-left" | "swipe-left" => GestureType::Slide {
+            direction: crate::emulator::SlideDirection::Left,
+        },
+        "slide-right" | "swipe-right" => GestureType::Slide {
+            direction: crate::emulator::SlideDirection::Right,
+        },
+        "rotate-cw" => GestureType::Rotate {
+            direction: crate::emulator::RotateDirection::Cw,
+        },
+        "rotate-ccw" => GestureType::Rotate {
+            direction: crate::emulator::RotateDirection::Ccw,
         },
         "tilt" => GestureType::Tilt { angle: 45.0 },
         _ => return Err(format!("Unknown gesture: {gesture}")),

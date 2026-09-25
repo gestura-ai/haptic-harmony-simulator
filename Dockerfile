@@ -2,7 +2,7 @@
 # Supports both CLI and GUI builds with cross-platform compilation
 
 # Build stage for Rust application
-FROM rust:1.75-slim as rust-builder
+FROM rust:1.89-slim AS rust-builder
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -18,11 +18,14 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy Cargo files
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY src/ ./src/
 
-# Build the CLI application
-RUN cargo build --release
+# Build the CLI application. The image has no firmware checkout, so the
+# default `device-core` feature (firmware-identical gesture engine via FFI)
+# is off here; mount/copy haptic-basic-firmware and set GESTURA_FIRMWARE_DIR
+# to build with it.
+RUN cargo build --release --no-default-features --features cli-only
 
 # Build stage for Node.js frontend
 FROM node:18-slim as frontend-builder
@@ -67,7 +70,7 @@ EXPOSE 8080
 CMD ["haptic-harmony-simulation", "--mode", "cli"]
 
 # Development stage with all tools
-FROM rust:1.75-slim as development
+FROM rust:1.89-slim AS development
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \

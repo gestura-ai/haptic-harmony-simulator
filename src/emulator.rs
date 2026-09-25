@@ -20,6 +20,19 @@ pub enum GestureType {
     Slide { direction: SlideDirection },
     /// Tilt gesture with angle (degrees)
     Tilt { angle: f32 },
+    /// Bezel rotation (device-truth kind, protocol v0.3.0 `rotate`).
+    /// Constructed by the CLI keys (`cli-only`) and the Tauri `trigger_gesture`
+    /// command (`tauri-gui`); the bare default build has no input path for it.
+    #[allow(dead_code)]
+    Rotate { direction: RotateDirection },
+}
+
+/// Rotation directions for [`GestureType::Rotate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum RotateDirection {
+    Cw,
+    Ccw,
 }
 
 /// Direction for slide gestures

@@ -5,7 +5,7 @@ This document outlines the system requirements and dependencies for the Haptic H
 ## Core Requirements
 
 ### Rust Toolchain
-- **Rust**: 1.70+ (latest stable recommended)
+- **Rust**: 1.85+ (edition 2024; latest stable recommended)
 - **Cargo**: Included with Rust installation
 - **Target**: Native platform (x86_64 or aarch64)
 
@@ -159,7 +159,7 @@ just test-workflows
 ## Version Compatibility
 
 ### Minimum Versions
-- **Rust**: 1.70.0
+- **Rust**: 1.85.0
 - **Just**: 1.0.0
 - **Node.js**: 18.0.0 (if using frontend features)
 

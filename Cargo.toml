@@ -5,7 +5,8 @@ edition = "2024"
 authors = ["Gestura AI Team"]
 description = "Advanced haptic ring simulation toolkit with BLE peripheral emulation"
 license = "LicenseRef-Gestura-Prosperity-1.1"
-repository = "https://github.com/haptic-harmony/haptic-harmony-simulation"
+repository = "https://github.com/gestura-ai/haptic-harmony-simulator"
+rust-version = "1.85"
 keywords = ["haptic", "ble", "simulation", "tauri", "ring"]
 categories = ["simulation", "hardware-support", "gui"]
 
