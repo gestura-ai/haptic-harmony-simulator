@@ -1,8 +1,8 @@
 # ![](./icons/32x32.png) Haptic Harmony Simulation
 
-[![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
 [![Tauri2](https://img.shields.io/badge/tauri-2.0+-purple.svg)](Tauri2)
-[![License](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![License](https://img.shields.io/badge/License-GPSL--1.1-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 
 > **Advanced Haptic Ring Simulation Toolkit** - A comprehensive Rust-based simulation environment for haptic feedback rings with BLE peripheral emulation.
@@ -27,21 +27,47 @@ The Haptic Harmony Simulation is a cutting-edge toolkit designed to simulate and
 
 ### Prerequisites
 
-- **Rust 1.70+** - [Install Rust](https://rustup.rs/)
+- **Rust 1.85+** (edition 2024) - [Install Rust](https://rustup.rs/)
 - **Node.js 18+** - For Tauri frontend development
 - **Platform-specific dependencies**:
   - **macOS**: Xcode Command Line Tools
   - **Linux**: `libudev-dev`, `libdbus-1-dev`
   - **Windows**: Visual Studio Build Tools
 
+### The `device-core` feature and the firmware checkout
+
+The default build (`device-core` feature, on by default) does **not**
+re-implement the ring: it compiles the ring firmware's actual gesture engine
+and wire codec from the `haptic-basic-firmware` repository and drives them
+over FFI, so gestures, thresholds, masking, acks and sequence numbering are
+firmware-identical. That means the default build needs that repository on
+disk — as the sibling directory `../haptic-basic-firmware`, or wherever
+`GESTURA_FIRMWARE_DIR` points:
+
+```bash
+git clone https://github.com/gestura-ai/haptic-basic-firmware.git ../haptic-basic-firmware
+# or
+export GESTURA_FIRMWARE_DIR=/path/to/haptic-basic-firmware
+```
+
+If you don't have the firmware repository, build with the legacy behavioural
+emulation instead (same protocol, same UUIDs; gesture timing/masking is
+approximated rather than firmware-identical):
+
+```bash
+cargo build --release --no-default-features --features cli-only
+cargo run   --no-default-features --features cli-only -- --mode cli
+```
+
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/haptic-harmony/haptic-harmony-simulation.git
-cd haptic-harmony-simulation
+git clone https://github.com/gestura-ai/haptic-harmony-simulator.git
+cd haptic-harmony-simulator
 
-# Build the project
+# Build the project (needs the firmware checkout — see above — or add
+# `--no-default-features --features cli-only`)
 cargo build --release
 
 # Run with GUI (default)
@@ -127,8 +153,11 @@ RUST_LOG=debug cargo run -- --mode cli
 | `Enter` | Tap | Single tap gesture |
 | `Space` | Hold | Hold gesture (release to complete) |
 | `d` | Double Tap | Double tap gesture |
-| `s` | Slide | Slide gesture (cycles directions) |
-| `t` | Tilt | Tilt gesture (cycles angles) |
+| `s` | Slide | Slide gesture (cycles Up → Right → Down → Left; Left/Right are the device-truth swipes) |
+| `←` / `→` | Swipe | Swipe left / right (device-truth gesture) |
+| `↑` / `r` | Rotate cw | Bezel rotation, clockwise (device-truth gesture) |
+| `↓` / `R` | Rotate ccw | Bezel rotation, counter-clockwise (device-truth gesture) |
+| `t` | Tilt | Tilt gesture (simulator-only kind) |
 | `Ctrl+C` | Exit | Gracefully shutdown simulation |
 
 ## Architecture
@@ -467,13 +496,13 @@ See the `examples/` directory for:
 
 ## Community
 
-- **GitHub Issues**: [Report bugs and request features](https://github.com/haptic-harmony/haptic-harmony-simulation/issues)
-- **Discussions**: [Community discussions](https://github.com/haptic-harmony/haptic-harmony-simulation/discussions)
+- **GitHub Issues**: [Report bugs and request features](https://github.com/gestura-ai/haptic-harmony-simulator/issues)
+- **Discussions**: [Community discussions](https://github.com/gestura-ai/haptic-harmony-simulator/discussions)
 - **Discord**: [Join our Discord server](https://discord.gg/haptic-harmony)
 
 ## License
 
-This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Gestura Prosperity Software License 1.1 (GPSL-1.1, `LicenseRef-Gestura-Prosperity-1.1`) - see the [LICENSE](LICENSE) file for details. (Relicensed from BSD-3-Clause on 2026-07-10.)
 
 ## Acknowledgments
 

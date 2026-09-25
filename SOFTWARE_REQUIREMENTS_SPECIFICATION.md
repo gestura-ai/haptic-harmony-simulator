@@ -87,7 +87,7 @@ Primary Technologies:
 
 Dependencies:
   - Node.js 18+: Frontend build system
-  - Rust 1.70+: Minimum supported Rust version
+  - Rust 1.85+ (edition 2024): Minimum supported Rust version
   - Platform WebView: Native webview integration
 
 Integration Points:

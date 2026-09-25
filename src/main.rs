@@ -94,6 +94,10 @@ struct SimulationApp {
     gesture_tx: Option<mpsc::UnboundedSender<GestureEvent>>,
     gesture_rx: Option<mpsc::UnboundedReceiver<GestureEvent>>,
     is_running: bool,
+    /// Direction the next `s` keypress slides in; `s` cycles Up → Right →
+    /// Down → Left so every slide direction (and therefore both device-truth
+    /// swipes, which are the horizontal slides) is reachable from the CLI.
+    next_slide: std::sync::atomic::AtomicU8,
 }
 
 impl SimulationApp {
@@ -114,6 +118,7 @@ impl SimulationApp {
             gesture_tx: Some(gesture_tx),
             gesture_rx: Some(gesture_rx),
             is_running: false,
+            next_slide: std::sync::atomic::AtomicU8::new(0),
         }
     }
 
@@ -198,9 +203,42 @@ impl SimulationApp {
                 Some(GestureType::Tilt { angle: 45.0 })
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                info!("⌨️ Key pressed: S → Slide gesture");
+                let idx = self
+                    .next_slide
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let direction = match idx % 4 {
+                    0 => SlideDirection::Up,
+                    1 => SlideDirection::Right,
+                    2 => SlideDirection::Down,
+                    _ => SlideDirection::Left,
+                };
+                info!("⌨️ Key pressed: S → Slide gesture ({direction:?})");
+                Some(GestureType::Slide { direction })
+            }
+            // Device-truth kinds the ring actually emits: horizontal swipes
+            // (the Left/Right slides) and bezel rotation.
+            KeyCode::Left => {
+                info!("⌨️ Key pressed: ← → Swipe left");
                 Some(GestureType::Slide {
-                    direction: SlideDirection::Up,
+                    direction: SlideDirection::Left,
+                })
+            }
+            KeyCode::Right => {
+                info!("⌨️ Key pressed: → → Swipe right");
+                Some(GestureType::Slide {
+                    direction: SlideDirection::Right,
+                })
+            }
+            KeyCode::Up | KeyCode::Char('r') => {
+                info!("⌨️ Key pressed: ↑/r → Rotate clockwise");
+                Some(GestureType::Rotate {
+                    direction: RotateDirection::Cw,
+                })
+            }
+            KeyCode::Down | KeyCode::Char('R') => {
+                info!("⌨️ Key pressed: ↓/R → Rotate counter-clockwise");
+                Some(GestureType::Rotate {
+                    direction: RotateDirection::Ccw,
                 })
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -334,9 +372,11 @@ impl SimulationApp {
         info!("Available gestures:");
         info!("  Enter - Tap");
         info!("  Space - Hold");
-        info!("  t - Tilt");
-        info!("  s - Slide");
         info!("  d - Double Tap");
+        info!("  ← / → - Swipe left / right (device-truth)");
+        info!("  ↑ or r / ↓ or R - Rotate cw / ccw (device-truth)");
+        info!("  s - Slide (cycles Up → Right → Down → Left)");
+        info!("  t - Tilt (simulator-only)");
         info!("");
         info!("Haptic command simulation:");
         info!("  h - Notify haptic");

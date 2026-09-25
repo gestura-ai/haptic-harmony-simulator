@@ -54,7 +54,7 @@ pub use connectivity::*;
 pub use emulator::HapticPattern as EmulatorHapticPattern;
 pub use emulator::{
     EmulatorState, GestureConfig, GestureEmulator, GestureEvent, GestureType, HapticConfig,
-    HapticEmulator, HapticEvent, InputEvent, SlideDirection,
+    HapticEmulator, HapticEvent, InputEvent, RotateDirection, SlideDirection,
 };
 pub use feedback::*;
 pub use mcp_mock::*;

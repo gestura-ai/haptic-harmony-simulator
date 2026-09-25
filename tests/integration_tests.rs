@@ -167,6 +167,50 @@ async fn test_gesture_types() {
     }
 }
 
+/// The two device-truth kinds a user could never trigger before 2026-09-24
+/// (`rotate` had no emulator variant; `swipe` = horizontal slide was
+/// hard-coded to Up) project onto the ratified v0.3.0 wire vocabulary.
+#[test]
+fn test_rotate_and_swipe_project_to_device_truth_wire_kinds() {
+    use haptic_harmony_simulation::emulator::RotateDirection;
+    use haptic_harmony_simulation::protocol::{
+        SemanticGesture, SemanticRotateDirection, SemanticSlideDirection,
+    };
+
+    let cw = GestureType::Rotate {
+        direction: RotateDirection::Cw,
+    };
+    let ccw = GestureType::Rotate {
+        direction: RotateDirection::Ccw,
+    };
+    assert_eq!(
+        SemanticGesture::from(&cw),
+        SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Cw
+        }
+    );
+    assert_eq!(
+        SemanticGesture::from(&ccw),
+        SemanticGesture::Rotate {
+            direction: SemanticRotateDirection::Ccw
+        }
+    );
+    // Wire tag is the ratified `rotate` kind with a `direction` field.
+    let json = serde_json::to_value(SemanticGesture::from(&ccw)).unwrap();
+    assert_eq!(json["gesture_kind"], "rotate");
+    assert_eq!(json["direction"], "ccw");
+
+    let left = GestureType::Slide {
+        direction: SlideDirection::Left,
+    };
+    assert_eq!(
+        SemanticGesture::from(&left),
+        SemanticGesture::Slide {
+            direction: SemanticSlideDirection::Left
+        }
+    );
+}
+
 #[tokio::test]
 async fn test_haptic_patterns() {
     // Test all haptic patterns can be created

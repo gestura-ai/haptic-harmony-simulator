@@ -1239,6 +1239,12 @@ class RingSimulator {
     }
 
     handleKeyboard(e) {
+        // Never hijack keys from focused form controls (sliders, selects,
+        // text inputs use Space/arrows natively).
+        if (e.target && typeof e.target.matches === 'function' &&
+            e.target.matches('input, select, textarea, [contenteditable="true"]')) {
+            return;
+        }
         // Prevent default for our shortcuts
         const shortcuts = {
             'Enter': 'tap',
@@ -1246,6 +1252,10 @@ class RingSimulator {
             't': 'tilt',
             's': 'slide',
             'd': 'double-tap',
+            'ArrowLeft': 'swipe-left',
+            'ArrowRight': 'swipe-right',
+            'ArrowUp': 'rotate-cw',
+            'ArrowDown': 'rotate-ccw',
             'h': 'notify',
             'b': 'buzz',
             'p': 'pulse',
@@ -1430,6 +1440,10 @@ class RingSimulator {
             'double-tap': 'fa-hand-pointer',
             'hold': 'fa-hand-rock',
             'slide': 'fa-hand-paper',
+            'swipe-left': 'fa-hand-point-left',
+            'swipe-right': 'fa-hand-point-right',
+            'rotate-cw': 'fa-rotate-right',
+            'rotate-ccw': 'fa-rotate-left',
             'tilt': 'fa-hand-scissors',
             'Ready': 'fa-hand-paper'
         };

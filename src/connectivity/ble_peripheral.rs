@@ -1973,8 +1973,14 @@ fn device_core_ui_gesture(
     gesture_type: &crate::emulator::GestureType,
 ) -> Option<crate::device_core::UiGesture> {
     use crate::device_core::UiGesture;
-    use crate::emulator::{GestureType, SlideDirection};
+    use crate::emulator::{GestureType, RotateDirection, SlideDirection};
     match gesture_type {
+        GestureType::Rotate {
+            direction: RotateDirection::Cw,
+        } => Some(UiGesture::RotateCw),
+        GestureType::Rotate {
+            direction: RotateDirection::Ccw,
+        } => Some(UiGesture::RotateCcw),
         GestureType::Tap => Some(UiGesture::Tap),
         GestureType::DoubleTap => Some(UiGesture::DoubleTap),
         GestureType::Hold { duration } => Some(UiGesture::Hold {
