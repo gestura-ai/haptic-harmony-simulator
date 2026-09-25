@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Build truth for outsiders: the README documents that the default `device-core` feature compiles the (private) `haptic-basic-firmware` sources and how to point `GESTURA_FIRMWARE_DIR` at a checkout or build with `--no-default-features --features cli-only`; the Dockerfile builds that way on a Rust image new enough for edition 2024 (`rust:1.75-slim` could not build this crate at all).
+- Security: `Cargo.lock` patched for RUSTSEC-2026-0258 (`h2` 0.4.12 → 0.4.19) and RUSTSEC-2026-0285 (`rustls` 0.23.31 → 0.23.45, `rustls-webpki` 0.103.13 → 0.103.15); both advisories post-date the last lockfile update and failed the Security Audit job on every branch.
 - README/manifest: license badge and section say GPSL-1.1 (relicensed 2026-07-10, badge still said BSD-3-Clause); clone/issue URLs and `Cargo.toml#repository` point at `gestura-ai/haptic-harmony-simulator` instead of a non-existent repository; Rust requirement is 1.85+ (`rust-version` added), not 1.70+.
 
 ## [0.1.0] - 2024-08-11
